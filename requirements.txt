@@ -5,3 +5,4 @@ python-dotenv>=1.0
 icalendar>=5.0
 aiohttp>=3.9
 psycopg[binary]>=3.1
+pymysql>=1.1

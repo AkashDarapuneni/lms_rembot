@@ -2,13 +2,17 @@
 
 Why three parts: Render's free web service **sleeps after 15 minutes without incoming web traffic**, and its **disk is wiped on every restart**. So you need (1) a keep-awake ping and (2) a free external database. Check Render's and your database host's current free-plan rules before you rely on them, they change.
 
-## 1. Free database (stores Telegram ID + LMS user ID)
-Use a free Postgres host, for example **Supabase** or **Neon**. Create a project and copy the connection string (it starts with `postgresql://`).
-- Supabase: Project > Connect > **Session pooler** string (Render needs the IPv4-compatible pooler). Replace `[YOUR-PASSWORD]` with your database password.
-- Do not use Render's own free Postgres: it expires after 30 days.
-- Neon pauses its compute when idle and has a monthly compute-hours cap on the free plan. Because this bot checks reminders every minute, it may use up that cap. If you pick Neon, watch its usage page.
+## 1. Free database: TiDB Cloud (stores Telegram ID + LMS user ID)
+TiDB Cloud Starter has a free tier (per its docs: 5 GiB storage and 50 million request units a month, no credit card to start, no expiry stated). Check pingcap.com for current terms.
+1. Sign up at tidbcloud.com and create a **Starter** instance.
+2. Click **Connect**, choose **General** (or PyMySQL), and click **Generate password**. Save the password.
+3. Note the **host** (like `gateway01.<region>.prod.aws.tidbcloud.com`), **port** (4000), **username** (like `abc123.root`) and database name (`test` by default).
+4. Build your `DATABASE_URL` like this:
+   `mysql://USERNAME:PASSWORD@HOST:4000/test`
+   If the password has special characters (`@ : / # ?`), replace each with its URL code, e.g. `@` becomes `%40`, `:` becomes `%3A`, `/` becomes `%2F`.
+The bot creates its tables automatically on first start and connects with TLS.
 
-The bot creates its tables automatically on first start.
+Postgres (Supabase, Neon) also works: use a `postgresql://...` string instead. Do not use Render's own free Postgres, which expires after 30 days.
 
 ## 2. Create the Render service
 1. Revoke any old bot token in @BotFather (`/revoke`) and keep the **new** one private.
