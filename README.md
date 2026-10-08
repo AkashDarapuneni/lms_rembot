@@ -9,7 +9,9 @@ Sends Telegram reminders before Moodle deadlines. Built for lms.kluniversity.in 
 
 ## Features
 - Default reminders at 24h, 6h, 2h, 1h, 50m and 10m before each deadline, changeable per user via `/reminders`
-- Telugu "mass hero" style punchlines that get more intense as the deadline nears (`/style on|off`)
+- Permanent button menu under the chat box (Today, This week, Upcoming, Overdue, Settings, Help, Reminders, Mass mode, Connect)
+- Mass mode: a Telugu-style dialogue plus an optional GIF for each reminder stage, edited in `punchlines.json` (`/style` or the Mass mode button turns it on/off, `/test 1h` previews one)
+- Optional Gemini API: writes fresh dialogue lines in the same style (set `GEMINI_API_KEY`), with the fixed lines as fallback
 - Daily digest, quiet hours, timezone, mute courses
 - Buttons on each reminder: Open in Moodle, Submitted, Snooze 1h, Tomorrow, Mute course
 - Auto sync every 15 min with alerts for new and changed deadlines

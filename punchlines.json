@@ -1,0 +1,45 @@
+{
+  "1d": {
+    "emoji": "⏳",
+    "lines": [
+      {"quote": "Samayam ledu mithrama...", "note": "24 hours is less than you think. Open your laptop!", "gif": "https://media.tenor.com/gautamiputra-satakarni.gif"},
+      {"quote": "LMS ante flower anukunnava? FIRE-U!", "note": "24 hours left, thaggedhe le!", "gif": "https://media.tenor.com/pushpa-allu-arjun.gif"}
+    ]
+  },
+  "6h": {
+    "emoji": "🪓",
+    "lines": [
+      {"quote": "Flute jinka mundu oodu... LMS server mundu kaadu!", "note": "Stop playing games!", "gif": "https://media.tenor.com/balayya-legend.gif"},
+      {"quote": "Little hearts tintava ra thuppasi vedhava? Velli assignment rayi!", "note": "", "gif": "https://media.tenor.com/ms-narayana.gif"}
+    ]
+  },
+  "2h": {
+    "emoji": "🚨",
+    "lines": [
+      {"quote": "Don't trouble the deadline! If you trouble the deadline, deadline troubles you!", "note": "2 hours left!", "gif": "https://media.tenor.com/balayya-dont-trouble.gif"},
+      {"quote": "YamaGola aypotundi ra... LMS lo submit chey 2 hours ey undi!", "note": "", "gif": "https://media.tenor.com/ntr-yamadonga.gif"}
+    ]
+  },
+  "1h": {
+    "emoji": "💣",
+    "lines": [
+      {"quote": "Akhandaaaa!!! LMS server eppudaina padipovachu, submit it immediately!", "note": "", "gif": "https://media.tenor.com/akhanda-balayya.gif"},
+      {"quote": "Arey, nenu matladedi vinapadatledaa!! Just 60 minutes left.", "note": "Drop everything and upload!", "gif": "https://media.tenor.com/temper-ntr.gif"}
+    ]
+  },
+  "50m": {
+    "emoji": "💀",
+    "lines": [
+      {"quote": "Arey entra idhi... asalu em jarugutondi akkada! 50 mins ki submit nokkara!", "note": "", "gif": "https://media.tenor.com/brahmi-king.gif"},
+      {"quote": "Last minute server crash chusava... mind block aypoddi! UPLOAD UPLOAD!", "note": "", "gif": "https://media.tenor.com/ntr-shock.gif"}
+    ]
+  },
+  "10m": {
+    "emoji": "🔥",
+    "lines": [
+      {"quote": "10 nimishaalu ra! Ippude upload cheyyi, aalochinchaku!", "note": "Submit now!", "gif": ""},
+      {"quote": "Clock cheppindi: ippude submit, ippude!", "note": "", "gif": ""},
+      {"quote": "Last minutes ra! Ippudu kaakapothe inkepudu? SUBMIT NOW!", "note": "", "gif": ""}
+    ]
+  }
+}

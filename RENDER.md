@@ -37,3 +37,10 @@ Open your bot in Telegram, send `/start`, tap **Connect**, log in. Then check `/
 ## Notes
 - If a deploy or restart happens, reminders resume within a minute or two of the service waking, and anything that was due while it slept is sent once as the most urgent reminder.
 - Free hosting can still miss reminders during outages. For something students depend on, a small always-on server is more reliable.
+
+## 5. Optional: GIFs and Gemini
+**GIFs.** Open `punchlines.json`. Each reminder stage (1d, 6h, 2h, 1h, 50m, 10m) has lines with a `quote`, a `note` and a `gif`. A `gif` must be a **direct link to a .gif or .mp4 file** (open the link in a browser: it should show only the animation, not a web page). When the bot starts it checks every GIF link and writes `GIF link not usable` in the Render log for any that fail; those lines are then sent as text only. After you edit the file, commit and push to GitHub and Render redeploys.
+
+**Gemini.** Get a free API key from Google AI Studio, then in Render > Environment add `GEMINI_API_KEY` (never put it in GitHub or in a chat). Optional: `GEMINI_MODEL` (default `gemini-2.5-flash`; change it if Google retires that name). Gemini writes one fresh line per stage and the bot reuses it for 30 minutes, so very few API calls are used. If Gemini is off, over its free quota or slow, the fixed lines from `punchlines.json` are used.
+
+**Check it works:** in Telegram send `/test 1h` (or 1d, 6h, 2h, 50m, 10m) to preview a reminder right away.

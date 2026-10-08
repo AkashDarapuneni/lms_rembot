@@ -1,4 +1,5 @@
 """Moodle assignment reminder bot for Telegram."""
+import asyncio
 import html
 import logging
 import os
@@ -9,13 +10,24 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from cryptography.fernet import Fernet
 import httpx
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
+from telegram import (
+    BotCommand,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    Update,
+    WebAppInfo,
+)
 from telegram.constants import ParseMode
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 import ical
@@ -47,10 +59,13 @@ ALLOW_ANY_SITE = os.getenv("ALLOW_ANY_SITE", "0") == "1"
 WEBAPP_URL = (os.getenv("WEBAPP_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/")  # public HTTPS URL of this server
 PORT = int(os.getenv("PORT", "8080"))
 
-esc = html.escape
+def esc(text) -> str:
+    """Escape for Telegram HTML (only & < > matter; quotes and apostrophes are fine as they are)."""
+    return html.escape(str(text), quote=False)
 
 HELP = (
     "<b>Moodle Reminder Bot</b>\n\n"
+    "Use the buttons under the chat box, or the commands below.\n\n"
     "<b>Connect (takes 1 minute)</b>\n"
     f"1. Open https://{DEFAULT_SITE}/calendar/export.php and log in\n"
     "2. Events to export: <b>All events</b>. Time period: <b>Recent and next 60 days</b> (or custom range)\n"
@@ -62,7 +77,9 @@ HELP = (
     "/today  /week  /upcoming  /overdue  /sync\n\n"
     "<b>Customize</b>\n"
     "/reminders 1d,6h,2h,1h,50m,10m - when to remind before a deadline (this is the default)\n"
-    "/style on|off - Telugu mass-style punchlines in reminders\n"
+    "/style on|off - Telugu mass-style dialogues and GIFs in reminders (the Mass mode button toggles it)\n"
+    "/test 1h - preview a reminder (try 1d, 6h, 2h, 1h, 50m, 10m)\n"
+    "/menu - show the buttons again\n"
     "/digest 08:00 (or /digest off) - daily summary time\n"
     "/quiet 23:00 07:00 (or /quiet off) - no reminders at night\n"
     "/timezone Asia/Kolkata\n"
@@ -82,6 +99,36 @@ def event_text(e, tz: str, header: str = "") -> str:
         f"{header}<b>{esc(e['name'])}</b>\n"
         f"{esc(e['course'])}\n"
         f"Due: {fmt_due(e['due_ts'], tz)} ({left})"
+    )
+
+
+def reminder_text(e, tz: str, header: str, style: dict | None) -> str:
+    """Plain reminder, or dialogue first / details / English nudge when mass mode is on."""
+    text = event_text(e, tz, header)
+    if not style:
+        return text
+    out = f"{style['emoji']} <i>\"{esc(style['quote'])}\"</i>\n\n{text}"
+    if style.get("note"):
+        out += f"\n\n{esc(style['note'])}"
+    return out
+
+
+# Buttons shown permanently under the chat box (3 per row)
+BTN_TODAY, BTN_WEEK, BTN_UPCOMING = "📅 Today", "📆 This week", "⏳ Upcoming"
+BTN_OVERDUE, BTN_SETTINGS, BTN_HELP = "⚠️ Overdue", "⚙️ Settings", "❓ Help"
+BTN_REMINDERS, BTN_MASS, BTN_CONNECT = "🔔 Reminders", "🎬 Mass mode", "🔗 Connect"
+MENU_ROWS = [
+    [BTN_TODAY, BTN_WEEK, BTN_UPCOMING],
+    [BTN_OVERDUE, BTN_SETTINGS, BTN_HELP],
+    [BTN_REMINDERS, BTN_MASS, BTN_CONNECT],
+]
+
+
+def main_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton(t) for t in row] for row in MENU_ROWS],
+        resize_keyboard=True,
+        is_persistent=True,
     )
 
 
@@ -177,8 +224,9 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
                     continue
                 db.set_snooze(chat_id, e["event_id"], 0)
                 if e["due_ts"] > now and not quiet:
-                    line = punchlines.pick(e["due_ts"] - now) if user["style"] else ""
-                    await send_reminder(context, chat_id, e, tz, "Snooze over: ", line)
+                    left = e["due_ts"] - now
+                    style = await punchlines.build(left, left) if user["style"] else None
+                    await send_reminder(context, chat_id, e, tz, "Snooze over: ", style)
                 continue
             to_send, passed = due_reminder_offsets(
                 now, e["due_ts"], offsets, db.sent_offsets(chat_id, e["event_id"])
@@ -189,21 +237,26 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
             if quiet and not urgent:
                 continue  # will fire once quiet hours end
             db.mark_sent(chat_id, e["event_id"], passed)
-            line = punchlines.pick(e["due_ts"] - now) if user["style"] else ""
-            await send_reminder(context, chat_id, e, tz, f"Reminder ({fmt_offset(to_send)} before): ", line)
+            style = await punchlines.build(to_send, e["due_ts"] - now) if user["style"] else None
+            await send_reminder(context, chat_id, e, tz, f"Reminder ({fmt_offset(to_send)} before): ", style)
 
 
-async def send_reminder(context, chat_id, e, tz, header, line=""):
+async def send_reminder(context, chat_id, e, tz, header, style=None, keyboard=True):
+    text = reminder_text(e, tz, header, style)
+    markup = event_keyboard(e) if keyboard else None
     try:
-        text = event_text(e, tz, header)
-        if line:
-            text += f"\n\n<i>{esc(line)}</i>"
-        await context.bot.send_message(
-            chat_id,
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=event_keyboard(e),
-        )
+        if style and style.get("gif"):
+            try:
+                await context.bot.send_animation(
+                    chat_id, style["gif"], caption=text, parse_mode=ParseMode.HTML, reply_markup=markup
+                )
+                return
+            except BadRequest as ex:  # link is not a usable GIF: remember that and send text instead
+                log.warning("GIF rejected by Telegram (%s): %s", ex, style["gif"])
+                punchlines.mark_gif_bad(style["gif"])
+            except Exception:
+                log.warning("GIF send failed, sending text instead")
+        await context.bot.send_message(chat_id, text, parse_mode=ParseMode.HTML, reply_markup=markup)
     except Exception:
         log.exception("could not send reminder to %s", chat_id)
 
@@ -233,7 +286,7 @@ async def send_list(bot, user, title, days=None, overdue=False):
     else:
         rows = db.pending_events(chat_id, since=now)[:15]
     if not rows:
-        await bot.send_message(chat_id, f"{title}\nNothing here. Enjoy the free time.")
+        await bot.send_message(chat_id, f"{title}\nNothing here. Enjoy the free time.", reply_markup=main_keyboard())
         return
     lines = [f"<b>{esc(title)}</b>", ""]
     for i, e in enumerate(rows, 1):
@@ -241,20 +294,64 @@ async def send_list(bot, user, title, days=None, overdue=False):
             f"{i}. <b>{esc(e['name'])}</b>\n   {esc(e['course'])}\n"
             f"   {fmt_due(e['due_ts'], user['tz'])} ({fmt_delta(e['due_ts'] - now)})"
         )
-    await bot.send_message(chat_id, "\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+    await bot.send_message(
+        chat_id, "\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+        reply_markup=main_keyboard(),
+    )
 
 
 # ---------- commands ----------
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_connect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if WEBAPP_URL:
         kb = InlineKeyboardMarkup(
             [[InlineKeyboardButton(f"Connect {DEFAULT_SITE}", web_app=WebAppInfo(url=f"{WEBAPP_URL}/connect"))]]
         )
         await update.message.reply_text(
-            f"Welcome! Tap the button, sign in to {DEFAULT_SITE}, and I'll fetch your deadlines automatically.",
+            f"Tap the button, sign in to {DEFAULT_SITE}, and I'll fetch your deadlines automatically.",
             reply_markup=kb,
         )
-    await update.message.reply_text(HELP, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+    else:
+        await update.message.reply_text(
+            f"Open https://{DEFAULT_SITE}/calendar/export.php, choose All events, click Get calendar URL, "
+            "then send: /calendar <your link>"
+        )
+
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if WEBAPP_URL:
+        await cmd_connect(update, context)
+    await update.message.reply_text(
+        HELP, parse_mode=ParseMode.HTML, disable_web_page_preview=True, reply_markup=main_keyboard()
+    )
+
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        HELP, parse_mode=ParseMode.HTML, disable_web_page_preview=True, reply_markup=main_keyboard()
+    )
+
+
+async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Buttons are on. Use them under the chat box.", reply_markup=main_keyboard())
+
+
+async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send a preview reminder right now, e.g. /test 1h."""
+    label = (context.args[0] if context.args else "1h").lower()
+    try:
+        secs = parse_offsets(label)[0]
+    except ValueError as ex:
+        await update.message.reply_text(str(ex))
+        return
+    chat_id = update.effective_chat.id
+    user = db.get_user(chat_id)
+    tz = user["tz"] if user else "Asia/Kolkata"
+    sample = {
+        "event_id": -1, "course_id": 0, "name": "Sample assignment",
+        "course": "Preview only, not a real task", "due_ts": int(time.time()) + secs, "url": "",
+    }
+    style = await punchlines.build(secs, secs) if (user["style"] if user else True) else None
+    await send_reminder(context, chat_id, sample, tz, f"Reminder ({fmt_offset(secs)} before): ", style, keyboard=False)
 
 
 async def link_calendar(app: Application, chat_id: int, url: str):
@@ -266,7 +363,8 @@ async def link_calendar(app: Application, chat_id: int, url: str):
     await app.bot.send_message(
         chat_id,
         f"Connected to {DEFAULT_SITE}. Found {count} pending task(s). Reminders are on.\n"
-        "Try /upcoming. Tap Submitted on a reminder when you finish a task.",
+        "Use the buttons below, or try /test 1h to preview a reminder. Tap Submitted on a reminder when you finish a task.",
+        reply_markup=main_keyboard(),
     )
 
 
@@ -286,6 +384,7 @@ async def _finish_login(update, context, site, token, source="api"):
         chat_id,
         f"Connected as {who}. Found {count} pending task(s).\n"
         f"Default reminders: {user['offsets']}. Change with /reminders.{note}",
+        reply_markup=main_keyboard(),
     )
 
 
@@ -502,13 +601,13 @@ async def cmd_style(update, context):
     if not user:
         return
     arg = context.args[0].lower() if context.args else ""
-    if arg not in ("on", "off"):
-        await update.message.reply_text(
-            f"Mass-style Telugu punchlines are {'on' if user['style'] else 'off'}. Use /style on or /style off"
-        )
-        return
+    if arg not in ("on", "off"):  # no argument (e.g. the Mass mode button): flip the current setting
+        arg = "off" if user["style"] else "on"
     db.set_field(user["chat_id"], "style", 1 if arg == "on" else 0)
-    await update.message.reply_text("Mass mode ON. Reminders will come with punchlines." if arg == "on" else "Punchlines off. Plain reminders only.")
+    await update.message.reply_text(
+        "Mass mode ON. Reminders will come with dialogues and GIFs. Try /test 1h to preview."
+        if arg == "on" else "Mass mode OFF. Plain reminders only."
+    )
 
 
 async def cmd_settings(update, context):
@@ -521,8 +620,22 @@ async def cmd_settings(update, context):
         f"Telegram ID: {user['chat_id']}\nLMS user ID: {user['moodle_userid'] or 'unknown'}\n"
         f"Site: {user['site_url']}\nTimezone: {user['tz']}\nReminders: {user['offsets']}\n"
         f"Daily digest: {user['digest_time'] or 'off'}\nQuiet hours: {quiet}\nMuted courses: {muted}\n"
-        f"Punchlines: {'on' if user['style'] else 'off'}"
+        f"Mass mode (dialogues + GIFs): {'on' if user['style'] else 'off'}"
     )
+
+
+MENU_ACTIONS = {
+    BTN_TODAY: cmd_today, BTN_WEEK: cmd_week, BTN_UPCOMING: cmd_upcoming,
+    BTN_OVERDUE: cmd_overdue, BTN_SETTINGS: cmd_settings, BTN_HELP: cmd_help,
+    BTN_REMINDERS: cmd_reminders, BTN_MASS: cmd_style, BTN_CONNECT: cmd_connect,
+}
+
+
+async def on_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A tap on one of the permanent buttons arrives as plain text: run the matching command."""
+    action = MENU_ACTIONS.get((update.message.text or "").strip())
+    if action:
+        await action(update, context)
 
 
 # ---------- inline buttons ----------
@@ -558,6 +671,20 @@ async def ping_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def post_init(app: Application):
+    await app.bot.set_my_commands([
+        BotCommand("start", "Start and show the buttons"),
+        BotCommand("today", "Due today"),
+        BotCommand("week", "Due this week"),
+        BotCommand("upcoming", "Upcoming deadlines"),
+        BotCommand("overdue", "Overdue tasks"),
+        BotCommand("reminders", "Change reminder times"),
+        BotCommand("style", "Mass mode on/off"),
+        BotCommand("test", "Preview a reminder"),
+        BotCommand("settings", "Show my settings"),
+        BotCommand("menu", "Show the buttons again"),
+        BotCommand("help", "Help"),
+    ])
+    app.bot_data["gif_check"] = asyncio.create_task(punchlines.verify_gifs())  # keep a reference
     if not WEBAPP_URL:
         log.info("WEBAPP_URL not set: Connect button disabled, /calendar still works")
         return
@@ -577,7 +704,8 @@ async def post_shutdown(app: Application):
 def main():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).post_shutdown(post_shutdown).build()
     handlers = {
-        "start": cmd_start, "help": cmd_start, "login": cmd_login, "token": cmd_token, "calendar": cmd_calendar,
+        "start": cmd_start, "help": cmd_help, "menu": cmd_menu, "test": cmd_test,
+        "login": cmd_login, "token": cmd_token, "calendar": cmd_calendar,
         "logout": cmd_logout, "sync": cmd_sync, "today": cmd_today, "week": cmd_week,
         "upcoming": cmd_upcoming, "overdue": cmd_overdue, "reminders": cmd_reminders,
         "digest": cmd_digest, "quiet": cmd_quiet, "timezone": cmd_timezone,
@@ -586,6 +714,7 @@ def main():
     for name, fn in handlers.items():
         app.add_handler(CommandHandler(name, fn))
     app.add_handler(CallbackQueryHandler(on_button))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_menu_text))
 
     app.job_queue.run_repeating(sync_job, interval=SYNC_MINUTES * 60, first=30)
     app.job_queue.run_repeating(reminder_job, interval=60, first=45)
