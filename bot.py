@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from cryptography.fernet import Fernet
+import httpx
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.constants import ParseMode
@@ -39,11 +40,11 @@ log = logging.getLogger("moodlebot")
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 fernet = Fernet(os.environ["SECRET_KEY"].encode())
-db = DB(os.getenv("DB_PATH", "moodle_bot.sqlite3"))
+db = DB(os.getenv("DATABASE_URL") or os.getenv("DB_PATH", "moodle_bot.sqlite3"))
 SYNC_MINUTES = int(os.getenv("SYNC_MINUTES", "15"))
 DEFAULT_SITE = os.getenv("DEFAULT_SITE", "lms.kluniversity.in")
 ALLOW_ANY_SITE = os.getenv("ALLOW_ANY_SITE", "0") == "1"
-WEBAPP_URL = os.getenv("WEBAPP_URL", "").rstrip("/")  # public HTTPS URL of this server, e.g. https://bot.example.com
+WEBAPP_URL = (os.getenv("WEBAPP_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/")  # public HTTPS URL of this server
 PORT = int(os.getenv("PORT", "8080"))
 
 esc = html.escape
@@ -167,6 +168,9 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
         offsets = parse_offsets(user["offsets"] or DEFAULT_OFFSETS)
         quiet = in_quiet_hours(now, tz, user["quiet_start"], user["quiet_end"])
         for e in db.pending_events(chat_id, since=now - 3600):
+            # Skip events too far away to need a reminder yet (saves database queries)
+            if not e["snooze_until"] and e["due_ts"] - now > offsets[0]:
+                continue
             # snooze expiry
             if e["snooze_until"]:
                 if now < e["snooze_until"]:
@@ -544,6 +548,15 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_reply_markup(None)
 
 
+async def ping_job(context: ContextTypes.DEFAULT_TYPE):
+    """Hit our own public /health URL so hosts that sleep idle web services (Render free) stay awake."""
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            await c.get(f"{WEBAPP_URL}/health")
+    except Exception:
+        log.warning("self-ping failed")
+
+
 async def post_init(app: Application):
     if not WEBAPP_URL:
         log.info("WEBAPP_URL not set: Connect button disabled, /calendar still works")
@@ -577,6 +590,8 @@ def main():
     app.job_queue.run_repeating(sync_job, interval=SYNC_MINUTES * 60, first=30)
     app.job_queue.run_repeating(reminder_job, interval=60, first=45)
     app.job_queue.run_repeating(digest_job, interval=60, first=50)
+    if os.getenv("RENDER") and WEBAPP_URL:
+        app.job_queue.run_repeating(ping_job, interval=600, first=120)
     log.info("Bot started")
     app.run_polling()
 

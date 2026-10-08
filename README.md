@@ -15,6 +15,9 @@ Sends Telegram reminders before Moodle deadlines. Built for lms.kluniversity.in 
 - Auto sync every 15 min with alerts for new and changed deadlines
 - Views: `/today /week /upcoming /overdue /settings`
 
+## Hosting
+See `RENDER.md` (free Render + cron ping + external Postgres) or `DEPLOY.md` (Oracle Cloud server).
+
 ## Setup
 1. Create a bot with @BotFather, copy the token.
 2. `pip install -r requirements.txt`

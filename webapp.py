@@ -102,7 +102,12 @@ def create_app(bot_token: str, on_connect, site: str) -> web.Application:
             return web.json_response({"ok": False, "error": "Saved login failed. Try /calendar instead."}, status=500)
         return web.json_response({"ok": True})
 
+    async def health(request):
+        return web.Response(text="ok")
+
     app = web.Application()
+    app.router.add_get("/health", health)
+    app.router.add_get("/", health)
     app.router.add_get("/connect", page)
     app.router.add_post("/api/connect", connect)
     return app
