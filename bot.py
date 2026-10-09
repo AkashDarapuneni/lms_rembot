@@ -85,9 +85,8 @@ HELP = (
     "🔔 <b>Reminder times</b>: by default 24h, 6h, 2h, 1h, 50m and 10m before each deadline\n\n"
     "<b>Ask me anything</b>\n"
     "Just type a question like \"what is due tomorrow?\" or \"how do I plan my week?\". AI answers.\n\n"
-    "<b>Other commands</b>\n"
-    "/test 1h: preview a reminder (try 1d, 6h, 2h, 1h, 50m, 10m)\n"
-    "/reminders 1d,6h,1h: change reminder times\n"
+    "<b>Handy extras</b>\n"
+    "🧪 Test (inside Settings): preview how a reminder looks\n"
     "/mute &lt;course&gt; and /unmute: silence a course\n"
     "/timezone Asia/Kolkata\n"
     "/logout: delete all your data"
@@ -108,6 +107,26 @@ FUN_LINES = [
 ]
 
 
+# Telegram full-screen message effects (private chats only)
+FX_PARTY, FX_SAD, FX_FIRE = "5046509860389126442", "5104858069142078462", "5104841245755180586"
+PRESETS = [
+    ("Default", "1d,6h,2h,1h,50m,10m", "24h, 6h, 2h, 1h, 50m, 10m"),
+    ("Relaxed", "1d,3h,1h", "24h, 3h, 1h"),
+    ("Intense", "2d,1d,12h,6h,3h,2h,1h,30m,10m,5m", "2d to 5m, 10 reminders"),
+    ("Last minute", "2h,30m,10m", "2h, 30m, 10m"),
+]
+
+
+async def send_fx(bot, chat_id, text, effect=None, **kw):
+    """Send a message with a full-screen celebration effect (🎉 / 👎 / 🔥); plain message if effects are unavailable."""
+    if effect:
+        try:
+            return await bot.send_message(chat_id, text, message_effect_id=effect, **kw)
+        except Exception:
+            pass
+    return await bot.send_message(chat_id, text, **kw)
+
+
 def level_for(points: int) -> str:
     return [name for need, name in LEVELS if points >= need][-1]
 
@@ -119,10 +138,13 @@ def get_token(user) -> str:
 
 def event_text(e, tz: str, header: str = "") -> str:
     left = fmt_delta(e["due_ts"] - int(time.time()))
+    head = f"<b>{esc(header.strip())}</b>\n" if header.strip() else ""
     return (
-        f"{header}<b>{esc(e['name'])}</b>\n"
-        f"{esc(e['course'])}\n"
-        f"Due: {fmt_due(e['due_ts'], tz)} ({left})"
+        f"{head}━━━━━━━━━━━━━━\n"
+        f"📌 <b>{esc(e['name'])}</b>\n"
+        f"📚 {esc(e['course'])}\n"
+        f"⏰ {fmt_due(e['due_ts'], tz)}  •  <b>{left}</b>\n"
+        "━━━━━━━━━━━━━━"
     )
 
 
@@ -430,11 +452,12 @@ async def link_calendar(app: Application, chat_id: int, url: str):
     site = "https://" + url.split("/")[2]
     db.save_login(chat_id, site, fernet.encrypt(url.encode()).decode(), "ics", ical.userid_from_url(url))
     count = await sync_user(app, db.get_user(chat_id), notify=False)
-    await app.bot.send_message(
-        chat_id,
-        f"Connected to {DEFAULT_SITE}. Found {count} pending task(s). Reminders are on.\n"
-        "Use the buttons below, or try /test 1h to preview a reminder. Tap Submitted on a reminder when you finish a task.",
-        reply_markup=main_keyboard(),
+    await send_fx(
+        app.bot, chat_id,
+        f"🎉 <b>You're in! Welcome aboard!</b> 🥳\n\n"
+        f"Connected to {DEFAULT_SITE}. I found <b>{count}</b> pending task(s) and reminders are ON.\n\n"
+        "Tap <b>⚙️ Settings</b> to try a preview, and press <b>Submitted</b> on a reminder when you finish a task.",
+        FX_PARTY, parse_mode=ParseMode.HTML, reply_markup=main_keyboard(),
     )
 
 
@@ -450,11 +473,10 @@ async def _finish_login(update, context, site, token, source="api"):
     user = db.get_user(chat_id)
     count = await sync_user(context.application, user, notify=False)
     note = "" if source == "api" else "\nNote: calendar mode can't see submissions, so tap Submitted on a reminder when you finish."
-    await context.bot.send_message(
-        chat_id,
-        f"Connected as {who}. Found {count} pending task(s).\n"
-        f"Default reminders: {user['offsets']}. Change with /reminders.{note}",
-        reply_markup=main_keyboard(),
+    await send_fx(
+        context.bot, chat_id,
+        f"🎉 <b>You're in, {esc(who)}!</b> 🥳\n\nI found <b>{count}</b> pending task(s). Reminders: {esc(user['offsets'])}.{esc(note)}",
+        FX_PARTY, parse_mode=ParseMode.HTML, reply_markup=main_keyboard(),
     )
 
 
@@ -855,17 +877,19 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         today = datetime.now(zone).date()
         early = bool(ev) and ev["due_ts"] - time.time() > 86400
         st = db.record_submit(chat_id, 15 if early else 10, early, today.isoformat(), (today - timedelta(days=1)).isoformat())
-        await q.answer("Marked as submitted 🎉")
+        gained = 15 if early else 10
+        await q.answer(f"🎉 Awesome! Submitted!\n+{gained} points  •  🔥 {st['streak']} day streak", show_alert=True)
         try:
             await q.edit_message_text(
-                (q.message.text or q.message.caption or "") + f"\n\n✅ Submitted! +{15 if early else 10} points • 🔥 {st['streak']} day streak • {level_for(st['points'])}"
+                (q.message.text or q.message.caption or "") + f"\n\n✅ <b>Submitted!</b> +{gained} points", parse_mode=ParseMode.HTML
             )
         except BadRequest:
             await q.edit_message_reply_markup(None)
-        try:
-            await context.bot.send_dice(chat_id, emoji=random.choice(["🎯", "🏀", "🎳"]))
-        except Exception:
-            pass
+        await send_fx(
+            context.bot, chat_id,
+            f"🎉 <b>Task done!</b> 🥳\n{level_for(st['points'])}  •  ⭐ {st['points']} pts  •  🔥 {st['streak']}-day streak",
+            FX_PARTY, parse_mode=ParseMode.HTML,
+        )
     elif action == "snz":
         until = int(time.time()) + int(parts[2]) * 60
         db.set_snooze(chat_id, int(parts[1]), until)
@@ -881,11 +905,18 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text("Log out and delete all your data from this bot?", reply_markup=kb)
         elif parts[1] == "yes":
             db.delete_user(chat_id)
-            await q.answer("Logged out")
-            await q.edit_message_text("👋 Logged out. All your data was deleted. Send /start to connect again.")
+            await q.answer("😢 Logged out. We'll miss you!", show_alert=True)
+            await q.edit_message_text("😢 Logged out. All your data was deleted.")
+            await send_fx(context.bot, chat_id, "😭 <b>Goodbye...</b>\n\nCome back any time: send /start and tap Connect.",
+                          FX_SAD, parse_mode=ParseMode.HTML)
         else:
             await q.answer("Cancelled")
             await q.edit_message_text("Okay, you stay logged in ✅")
+    elif action == "tp":
+        name, value, desc = PRESETS[int(parts[1])]
+        db.set_field(chat_id, "offsets", value)
+        await q.answer(f"✅ {name} reminders saved", show_alert=False)
+        await q.edit_message_text(f"✅ <b>{name}</b> reminders saved: {desc} before each deadline.", parse_mode=ParseMode.HTML)
     elif action == "set":
         user = db.get_user(chat_id)
         if not user:
@@ -905,9 +936,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 db.set_field(chat_id, "quiet_end", "07:00")
         elif key == "times":
             await q.answer()
-            await q.message.reply_text(
-                f"Current reminders: {user['offsets']}\nChange them like this: /reminders 3d,1d,6h,1h (m = minutes, h = hours, d = days)"
-            )
+            rows = [[InlineKeyboardButton(f"{'✅ ' if user['offsets'] == v else ''}{n}: {d}", callback_data=f"tp:{i}")]
+                    for i, (n, v, d) in enumerate(PRESETS)]
+            await q.message.reply_text("🔔 <b>When should I remind you?</b>\nPick one:", parse_mode=ParseMode.HTML,
+                                       reply_markup=InlineKeyboardMarkup(rows))
             return
         elif key == "test":
             await q.answer("Sending a preview")

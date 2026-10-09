@@ -29,33 +29,74 @@ def verify_init_data(init_data: str, bot_token: str, max_age: int = 3600) -> dic
 
 
 PAGE = """<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-body{font-family:system-ui,sans-serif;margin:0;padding:20px;background:var(--tg-theme-bg-color,#fff);color:var(--tg-theme-text-color,#111)}
-h2{margin:0 0 6px} p{opacity:.75;font-size:14px;line-height:1.4}
-input{width:100%;box-sizing:border-box;padding:12px;margin:6px 0;font-size:16px;border:1px solid #8884;border-radius:8px;background:var(--tg-theme-secondary-bg-color,#f4f4f4);color:inherit}
-button{width:100%;padding:13px;margin-top:10px;font-size:16px;border:0;border-radius:8px;background:var(--tg-theme-button-color,#2481cc);color:var(--tg-theme-button-text-color,#fff)}
-#msg{margin-top:12px;font-size:14px}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+  background:linear-gradient(135deg,#1e3c72,#2a5298 45%,#7b4397);color:#fff;overflow:hidden}
+.card{width:100%;max-width:380px;padding:28px 24px;border-radius:24px;background:rgba(255,255,255,.14);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  border:1px solid rgba(255,255,255,.25);box-shadow:0 20px 50px rgba(0,0,0,.35);animation:rise .6s ease both;text-align:center;position:relative;z-index:2}
+@keyframes rise{from{opacity:0;transform:translateY(24px) scale(.96)}to{opacity:1;transform:none}}
+.logo{font-size:52px;animation:bob 2.4s ease-in-out infinite}
+@keyframes bob{50%{transform:translateY(-8px) rotate(-4deg)}}
+h2{margin:6px 0 4px;font-size:22px} p{margin:0 0 16px;font-size:14px;line-height:1.45;opacity:.85}
+.site{display:inline-block;padding:3px 10px;border-radius:99px;background:rgba(255,255,255,.2);font-weight:600}
+input{width:100%;padding:14px 16px;margin:6px 0;font-size:16px;color:#fff;border:1px solid rgba(255,255,255,.3);border-radius:14px;background:rgba(255,255,255,.12);outline:none;transition:.2s}
+input::placeholder{color:rgba(255,255,255,.65)} input:focus{border-color:#fff;background:rgba(255,255,255,.22)}
+button{width:100%;padding:15px;margin-top:12px;font-size:17px;font-weight:700;color:#2a2a6a;border:0;border-radius:14px;cursor:pointer;
+  background:linear-gradient(90deg,#ffe259,#ffa751);box-shadow:0 8px 20px rgba(255,167,81,.45);transition:transform .15s}
+button:active{transform:scale(.97)} button:disabled{opacity:.6}
+#msg{min-height:22px;margin-top:14px;font-size:14px}
+.shake{animation:shake .4s} @keyframes shake{25%{transform:translateX(-8px)}75%{transform:translateX(8px)}}
+.ok .logo{animation:pop .6s ease both} @keyframes pop{from{transform:scale(.3)}to{transform:scale(1)}}
+canvas{position:fixed;inset:0;pointer-events:none;z-index:1}
+.lock{font-size:12px;opacity:.7;margin-top:14px}
 </style></head><body>
-<h2>Connect __SITE__</h2>
-<p>Sign in with your LMS account. Your password is used once to fetch your calendar link and is never stored.</p>
-<input id="u" placeholder="Username or email" autocomplete="username">
-<input id="p" type="password" placeholder="Password" autocomplete="current-password">
-<button id="go">Connect</button>
-<div id="msg"></div>
+<canvas id="c"></canvas>
+<div class="card" id="card">
+  <div class="logo" id="logo">🎓</div>
+  <h2 id="title">Connect your LMS</h2>
+  <p id="sub">Sign in to <span class="site">__SITE__</span> once. I'll fetch your deadlines and remind you before each one.</p>
+  <div id="form">
+    <input id="u" placeholder="👤  Username or email" autocomplete="username">
+    <input id="p" type="password" placeholder="🔒  Password" autocomplete="current-password">
+    <button id="go">Connect 🚀</button>
+  </div>
+  <div id="msg"></div>
+  <div class="lock">🔐 Your password is used once and never stored.</div>
+</div>
 <script>
 const tg=window.Telegram.WebApp; tg.ready(); tg.expand();
-const msg=document.getElementById('msg');
+const msg=document.getElementById('msg'), card=document.getElementById('card');
+const cv=document.getElementById('c'), cx=cv.getContext('2d');
+function confetti(){
+  cv.width=innerWidth; cv.height=innerHeight;
+  const cols=['#ffe259','#ffa751','#ff6b6b','#4ecdc4','#fff','#a29bfe'];
+  const ps=Array.from({length:140},()=>({x:Math.random()*cv.width,y:-20-Math.random()*cv.height*.5,r:4+Math.random()*6,
+    c:cols[Math.floor(Math.random()*cols.length)],vy:2+Math.random()*4,vx:-2+Math.random()*4,a:Math.random()*6}));
+  let t=0; (function f(){cx.clearRect(0,0,cv.width,cv.height);
+    ps.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.a+=.1;cx.save();cx.translate(p.x,p.y);cx.rotate(p.a);cx.fillStyle=p.c;cx.fillRect(-p.r,-p.r/2,p.r*2,p.r);cx.restore()});
+    if(++t<220) requestAnimationFrame(f); else cx.clearRect(0,0,cv.width,cv.height)})();
+}
 document.getElementById('go').onclick=async()=>{
-  const btn=document.getElementById('go'); btn.disabled=true; msg.textContent='Connecting...';
+  const btn=document.getElementById('go'); btn.disabled=true; msg.textContent='⏳ Connecting...';
   try{
     const r=await fetch('/api/connect',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({initData:tg.initData,username:document.getElementById('u').value,password:document.getElementById('p').value})});
     const d=await r.json();
-    if(d.ok){msg.textContent='Connected! Check the chat.'; setTimeout(()=>tg.close(),1200);}
-    else{msg.textContent=d.error||'Failed.'; btn.disabled=false;}
-  }catch(e){msg.textContent='Network error. Try again.'; btn.disabled=false;}
+    if(d.ok){
+      card.classList.add('ok'); document.getElementById('form').style.display='none';
+      document.getElementById('logo').textContent='🎉'; document.getElementById('title').textContent="You're in!";
+      document.getElementById('sub').textContent='Connected! Check your chat, your reminders are ON.'; msg.textContent='';
+      confetti(); try{tg.HapticFeedback.notificationOccurred('success')}catch(e){}
+      setTimeout(()=>tg.close(),2600);
+    } else {
+      msg.textContent='😕 '+(d.error||'Failed.'); btn.disabled=false;
+      card.classList.remove('shake'); void card.offsetWidth; card.classList.add('shake');
+      try{tg.HapticFeedback.notificationOccurred('error')}catch(e){}
+    }
+  }catch(e){msg.textContent='😕 Network error. Try again.'; btn.disabled=false;}
 };
 </script></body></html>"""
 
