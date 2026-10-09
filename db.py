@@ -37,6 +37,24 @@ CREATE TABLE IF NOT EXISTS muted (
     chat_id BIGINT, course_id BIGINT, course TEXT,
     PRIMARY KEY (chat_id, course_id)
 );
+CREATE TABLE IF NOT EXISTS line_pool (
+    stage VARCHAR(8), h VARCHAR(40),
+    quote TEXT, note TEXT, gif TEXT,
+    source VARCHAR(8), created BIGINT,
+    last_used BIGINT DEFAULT 0, uses BIGINT DEFAULT 0,
+    PRIMARY KEY (stage, h)
+);
+CREATE TABLE IF NOT EXISTS stats (
+    chat_id BIGINT PRIMARY KEY,
+    points BIGINT DEFAULT 0, submitted BIGINT DEFAULT 0, early BIGINT DEFAULT 0,
+    streak BIGINT DEFAULT 0, best_streak BIGINT DEFAULT 0, last_day VARCHAR(10) DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS media_pool (
+    file_unique_id VARCHAR(100) PRIMARY KEY,
+    file_id TEXT, kind VARCHAR(12), tag VARCHAR(8),
+    added_by BIGINT, created BIGINT,
+    last_used BIGINT DEFAULT 0, uses BIGINT DEFAULT 0
+);
 """
 
 # Columns added after the first release: (name, definition)
@@ -44,6 +62,8 @@ NEW_USER_COLUMNS = [
     ("source", "VARCHAR(8) DEFAULT 'api'"),  # 'api' (web service token) or 'ics' (calendar export URL)
     ("moodle_userid", "BIGINT"),  # LMS user id taken from the calendar link / API
     ("style", "INTEGER DEFAULT 1"),  # 1 = Telugu punchlines in reminders
+    ("memes", "INTEGER DEFAULT 1"),  # 1 = send memes / GIFs / stickers with reminders
+    ("ai_lines", "INTEGER DEFAULT 1"),  # 1 = also use dialogue lines written by Gemini
 ]
 
 
@@ -118,6 +138,14 @@ class DB:
             sql = base + f"ON CONFLICT({','.join(keys)}) DO UPDATE SET " + sets
         self._exec(sql, args)
 
+    def _insert_ignore(self, table, cols, args):
+        ph = ",".join("?" * len(cols))
+        if self.my:
+            sql = f"INSERT IGNORE INTO {table}({','.join(cols)}) VALUES({ph})"
+        else:
+            sql = f"INSERT INTO {table}({','.join(cols)}) VALUES({ph}) ON CONFLICT DO NOTHING"
+        self._exec(sql, args)
+
     def _init_schema(self):
         for stmt in TABLES.split(";"):
             if stmt.strip():
@@ -156,11 +184,11 @@ class DB:
         )
 
     def set_field(self, chat_id, field, value):
-        assert field in {"tz", "offsets", "digest_time", "last_digest", "quiet_start", "quiet_end", "last_sync", "style"}
+        assert field in {"tz", "offsets", "digest_time", "last_digest", "quiet_start", "quiet_end", "last_sync", "style", "memes", "ai_lines"}
         self._exec(f"UPDATE users SET {field}=? WHERE chat_id=?", (value, chat_id))
 
     def delete_user(self, chat_id):
-        for t in ("users", "events", "sent", "muted"):
+        for t in ("users", "events", "sent", "muted", "stats"):
             self._exec(f"DELETE FROM {t} WHERE chat_id=?", (chat_id,))
 
     # ---- events ----
@@ -227,3 +255,95 @@ class DB:
 
     def is_muted(self, chat_id, course_id):
         return self._exec("SELECT 1 FROM muted WHERE chat_id=? AND course_id=?", (chat_id, course_id)).fetchone() is not None
+
+    # ---- dialogue pool (each line is used at most once per reuse window, see punchlines.py) ----
+    def pool_add(self, stage, h, quote, note, gif, source, ts):
+        cols = ["stage", "h", "quote", "note", "gif", "source", "created"]
+        args = (stage, h, quote, note, gif, source, ts)
+        if source == "fixed":  # lines from punchlines.json: keep them in sync with the file
+            self._upsert("line_pool", cols, args, ["stage", "h"], ["quote", "note", "gif", "source"])
+        else:
+            self._insert_ignore("line_pool", cols, args)
+
+    def pool_counts(self, cutoff):
+        """{stage: (lines free to use, total lines)}; a line is free if it was last used before `cutoff`."""
+        rows = self._exec(
+            "SELECT stage, COUNT(*) AS total, SUM(CASE WHEN last_used<? THEN 1 ELSE 0 END) AS free "
+            "FROM line_pool GROUP BY stage", (cutoff,),
+        ).fetchall()
+        return {r["stage"]: (int(r["free"] or 0), int(r["total"])) for r in rows}
+
+    def pool_free(self, stage, cutoff, limit=200, source=None):
+        q, args = "SELECT * FROM line_pool WHERE stage=? AND last_used<?", [stage, cutoff]
+        if source:
+            q += " AND source=?"
+            args.append(source)
+        return self._exec(q + f" LIMIT {int(limit)}", args).fetchall()
+
+    def pool_oldest(self, stage, source=None):
+        q, args = "SELECT * FROM line_pool WHERE stage=?", [stage]
+        if source:
+            q += " AND source=?"
+            args.append(source)
+        return self._exec(q + " ORDER BY last_used LIMIT 1", args).fetchone()
+
+    def pool_touch(self, stage, h, ts):
+        self._exec("UPDATE line_pool SET last_used=?, uses=uses+1 WHERE stage=? AND h=?", (ts, stage, h))
+
+    def pool_quotes(self, stage):
+        return [r["quote"] for r in self._exec("SELECT quote FROM line_pool WHERE stage=?", (stage,)).fetchall()]
+
+    def pool_fixed_hashes(self, stage):
+        rows = self._exec("SELECT h FROM line_pool WHERE stage=? AND source='fixed'", (stage,)).fetchall()
+        return {r["h"] for r in rows}
+
+    def pool_delete(self, stage, h):
+        self._exec("DELETE FROM line_pool WHERE stage=? AND h=?", (stage, h))
+
+    # ---- stats: points, level, streak ----
+    def get_stats(self, chat_id):
+        row = self._exec("SELECT * FROM stats WHERE chat_id=?", (chat_id,)).fetchone()
+        if row:
+            return dict(row)
+        return {"chat_id": chat_id, "points": 0, "submitted": 0, "early": 0, "streak": 0, "best_streak": 0, "last_day": ""}
+
+    def record_submit(self, chat_id, points, early, day, yesterday):
+        s = self.get_stats(chat_id)
+        if s["last_day"] == day:
+            streak = s["streak"] or 1
+        elif s["last_day"] == yesterday:
+            streak = s["streak"] + 1
+        else:
+            streak = 1
+        cols = ["chat_id", "points", "submitted", "early", "streak", "best_streak", "last_day"]
+        self._upsert(
+            "stats", cols,
+            (chat_id, s["points"] + points, s["submitted"] + 1, s["early"] + (1 if early else 0),
+             streak, max(s["best_streak"], streak), day),
+            ["chat_id"], cols[1:],
+        )
+        return self.get_stats(chat_id)
+
+    def count_users(self):
+        return int(self._exec("SELECT COUNT(*) AS n FROM users WHERE token_enc IS NOT NULL").fetchone()["n"])
+
+    # ---- memes / GIFs / stickers taught by the admin (Telegram file ids) ----
+    def media_add(self, uid, file_id, kind, tag, added_by, ts):
+        cols = ["file_unique_id", "file_id", "kind", "tag", "added_by", "created"]
+        self._upsert("media_pool", cols, (uid, file_id, kind, tag, added_by, ts), ["file_unique_id"], ["file_id", "kind", "tag"])
+
+    def media_free(self, tags, cutoff, limit=100):
+        ph = ",".join("?" * len(tags))
+        return self._exec(
+            f"SELECT * FROM media_pool WHERE tag IN ({ph}) AND last_used<? LIMIT {int(limit)}", (*tags, cutoff)
+        ).fetchall()
+
+    def media_oldest(self, tags):
+        ph = ",".join("?" * len(tags))
+        return self._exec(f"SELECT * FROM media_pool WHERE tag IN ({ph}) ORDER BY last_used LIMIT 1", tuple(tags)).fetchone()
+
+    def media_touch(self, uid, ts):
+        self._exec("UPDATE media_pool SET last_used=?, uses=uses+1 WHERE file_unique_id=?", (ts, uid))
+
+    def media_counts(self):
+        return self._exec("SELECT tag, kind, COUNT(*) AS n FROM media_pool GROUP BY tag, kind").fetchall()

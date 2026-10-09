@@ -44,3 +44,7 @@ Open your bot in Telegram, send `/start`, tap **Connect**, log in. Then check `/
 **Gemini.** Get a free API key from Google AI Studio, then in Render > Environment add `GEMINI_API_KEY` (never put it in GitHub or in a chat). Optional: `GEMINI_MODEL` (default `gemini-2.5-flash`; change it if Google retires that name). Gemini writes one fresh line per stage and the bot reuses it for 30 minutes, so very few API calls are used. If Gemini is off, over its free quota or slow, the fixed lines from `punchlines.json` are used.
 
 **Check it works:** in Telegram send `/test 1h` (or 1d, 6h, 2h, 50m, 10m) to preview a reminder right away.
+
+## Memes, GIFs, stickers and admin tools
+Add `ADMIN_IDS` (your numeric Telegram ID, from @userinfobot) in Render > Environment. Then send the bot any GIF, sticker or photo with the caption `meme any` (or `meme 1h`, `meme 10m` ...) and it will use it in reminders and in the 🎲 Fun button. Without any saved memes the bot sends Telegram's animated dice. `/botstats` shows users, dialogue pool size and saved memes.
+Gemini answers use the student's pending task names as context; set `GEMINI_SHARE_DEADLINES=0` to disable that.

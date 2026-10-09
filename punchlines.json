@@ -2,44 +2,331 @@
   "1d": {
     "emoji": "⏳",
     "lines": [
-      {"quote": "Samayam ledu mithrama...", "note": "24 hours is less than you think. Open your laptop!", "gif": "https://media.tenor.com/gautamiputra-satakarni.gif"},
-      {"quote": "LMS ante flower anukunnava? FIRE-U!", "note": "24 hours left, thaggedhe le!", "gif": "https://media.tenor.com/pushpa-allu-arjun.gif"}
+      {
+        "quote": "Samayam ledu mithrama...",
+        "note": "24 hours is less than you think. Open your laptop!",
+        "gif": "https://media.tenor.com/gautamiputra-satakarni.gif"
+      },
+      {
+        "quote": "LMS ante flower anukunnava? FIRE-U!",
+        "note": "24 hours left, thaggedhe le!",
+        "gif": "https://media.tenor.com/pushpa-allu-arjun.gif"
+      },
+      {
+        "quote": "Time undi anukunte, adhe mundu padipoye shatru ra!",
+        "note": "24 hours. Start today.",
+        "gif": ""
+      },
+      {
+        "quote": "Roju oka page rasthe, deadline nee mundu mokaalladuthundi!",
+        "note": "Small steps today save tonight.",
+        "gif": ""
+      },
+      {
+        "quote": "Naaku telsu, nuvvu ippude chesthav. Kaakapothe repu panic chesthav!",
+        "note": "One day left.",
+        "gif": ""
+      },
+      {
+        "quote": "Assignment ante bhayam kaadu ra, avoid cheyyadam bhayam!",
+        "note": "Open it and write the first line.",
+        "gif": ""
+      },
+      {
+        "quote": "Ee roju start chesthe champion, repu start chesthe passenger!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Deadline dooram ga kanipisthundi, kaani daggara ayye vegam telusa?",
+        "note": "Plan it now.",
+        "gif": ""
+      },
+      {
+        "quote": "Coffee teesuko, laptop open cheyyi, story ippude modalavvali!",
+        "note": "Use the day-1 energy.",
+        "gif": ""
+      },
+      {
+        "quote": "Calm ga undu, kaani time waste cheyyaku ra!",
+        "note": "",
+        "gif": ""
+      }
     ]
   },
   "6h": {
     "emoji": "🪓",
     "lines": [
-      {"quote": "Flute jinka mundu oodu... LMS server mundu kaadu!", "note": "Stop playing games!", "gif": "https://media.tenor.com/balayya-legend.gif"},
-      {"quote": "Little hearts tintava ra thuppasi vedhava? Velli assignment rayi!", "note": "", "gif": "https://media.tenor.com/ms-narayana.gif"}
+      {
+        "quote": "Flute jinka mundu oodu... LMS server mundu kaadu!",
+        "note": "Stop playing games!",
+        "gif": "https://media.tenor.com/balayya-legend.gif"
+      },
+      {
+        "quote": "Little hearts tintava ra thuppasi vedhava? Velli assignment rayi!",
+        "note": "",
+        "gif": "https://media.tenor.com/ms-narayana.gif"
+      },
+      {
+        "quote": "Aaru gantalu ra... aaru ante chala, kaani aalochisthe thakkuva!",
+        "note": "Start now, finish easy.",
+        "gif": ""
+      },
+      {
+        "quote": "Instagram ni konchem aapu, assignment ni konchem paluku!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Nuvvu nilabadithe deadline venakki vellali, kurchoni scroll chesthe kaadu!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Ee 6 gantalu nee kosam kaadu, nee marks kosam!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Lunch tarvata laptop, laptop tarvata relax. Plan clear ga undi!",
+        "note": "Write the plan on paper.",
+        "gif": ""
+      },
+      {
+        "quote": "Sink lo plates ki time undi, assignment ki ledu. Pani modalettu!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Eppudaina cheddam anukunnava? Ade ippudu ra!",
+        "note": "Now is the time.",
+        "gif": ""
+      },
+      {
+        "quote": "Chai tarvata chaduvu kaadu, chaduvu tarvata chai. Start cheyyi!",
+        "note": "",
+        "gif": ""
+      }
     ]
   },
   "2h": {
     "emoji": "🚨",
     "lines": [
-      {"quote": "Don't trouble the deadline! If you trouble the deadline, deadline troubles you!", "note": "2 hours left!", "gif": "https://media.tenor.com/balayya-dont-trouble.gif"},
-      {"quote": "YamaGola aypotundi ra... LMS lo submit chey 2 hours ey undi!", "note": "", "gif": "https://media.tenor.com/ntr-yamadonga.gif"}
+      {
+        "quote": "Don't trouble the deadline! If you trouble the deadline, deadline troubles you!",
+        "note": "2 hours left!",
+        "gif": "https://media.tenor.com/balayya-dont-trouble.gif"
+      },
+      {
+        "quote": "YamaGola aypotundi ra... LMS lo submit chey 2 hours ey undi!",
+        "note": "",
+        "gif": "https://media.tenor.com/ntr-yamadonga.gif"
+      },
+      {
+        "quote": "Rendu gantalu ra, entry ivvali, ending ivvali!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Deadline gadiyaram chuste gundellu parugulu, ippude pani chey, bayam povali!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Ippudu em chesthav ani adagaku, em chesthunnavo choopinchu!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Mundu lekha, tarvata lekkalu. First paragraph rayi ra!",
+        "note": "Just write the intro.",
+        "gif": ""
+      },
+      {
+        "quote": "Friends ki reply tarvata ivvachu, ippudu paper ki ivvu!",
+        "note": "Phone away for 2 hours.",
+        "gif": ""
+      },
+      {
+        "quote": "Time ni nuvvu kodithe time ninnu kodithundi ra, jagratha!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Charger teesuko, water bottle teesuko, war ki ready avvu!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Plan A submit, plan B submit, plan C panic. Nuvvu A lo undu!",
+        "note": "",
+        "gif": ""
+      }
     ]
   },
   "1h": {
     "emoji": "💣",
     "lines": [
-      {"quote": "Akhandaaaa!!! LMS server eppudaina padipovachu, submit it immediately!", "note": "", "gif": "https://media.tenor.com/akhanda-balayya.gif"},
-      {"quote": "Arey, nenu matladedi vinapadatledaa!! Just 60 minutes left.", "note": "Drop everything and upload!", "gif": "https://media.tenor.com/temper-ntr.gif"}
+      {
+        "quote": "Akhandaaaa!!! LMS server eppudaina padipovachu, submit it immediately!",
+        "note": "",
+        "gif": "https://media.tenor.com/akhanda-balayya.gif"
+      },
+      {
+        "quote": "Arey, nenu matladedi vinapadatledaa!! Just 60 minutes left.",
+        "note": "Drop everything and upload!",
+        "gif": "https://media.tenor.com/temper-ntr.gif"
+      },
+      {
+        "quote": "Okka gantalo history rayavachu, assignment submit cheyyochu!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Ippudu kaakunte ippudu ledu ra, gadiyaram aagadu!",
+        "note": "60 minutes.",
+        "gif": ""
+      },
+      {
+        "quote": "Server slow ayye mundu upload kottu, tarvata prarthinchu!",
+        "note": "Upload early, server gets slow.",
+        "gif": ""
+      },
+      {
+        "quote": "Final draft perfect ga lekapoyina parledu, submit chesina draft ye nijam!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Ee ganta nuvvu chesindi ee semester ni maarchesthundi!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Perfect kaadu, pooti cheyyadam mukhyam. Ippude finish!",
+        "note": "Done is better than perfect.",
+        "gif": ""
+      },
+      {
+        "quote": "Nenu cheppanu, time ledu. Nuvvu cheppakapoyina chesthav ani telusu!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Siren motha modalaindi, upload button daggara ready ga undu!",
+        "note": "",
+        "gif": ""
+      }
     ]
   },
   "50m": {
     "emoji": "💀",
     "lines": [
-      {"quote": "Arey entra idhi... asalu em jarugutondi akkada! 50 mins ki submit nokkara!", "note": "", "gif": "https://media.tenor.com/brahmi-king.gif"},
-      {"quote": "Last minute server crash chusava... mind block aypoddi! UPLOAD UPLOAD!", "note": "", "gif": "https://media.tenor.com/ntr-shock.gif"}
+      {
+        "quote": "Arey entra idhi... asalu em jarugutondi akkada! 50 mins ki submit nokkara!",
+        "note": "",
+        "gif": "https://media.tenor.com/brahmi-king.gif"
+      },
+      {
+        "quote": "Last minute server crash chusava... mind block aypoddi! UPLOAD UPLOAD!",
+        "note": "",
+        "gif": "https://media.tenor.com/ntr-shock.gif"
+      },
+      {
+        "quote": "Anumanam ledu, anchana ledu, 50 nimishaalu matrame. Keyboard kottu!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Cheppina maata vinte hero, vinakapothe zero. Submit ki velthunnav kadha?",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Ee 50 nimishaalu nee fate ni rase pen ra!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Doubt unte comment lo, kaani paper lo rayi. Clock aagadu!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Ammaku cheppina maata gurthundha? Idi cheyyali ra, ippude!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Tension padakunda tension ga cheyyi: 50 minutes, one upload!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Laptop charge lo pettu, assignment ni attack lo pettu!",
+        "note": "Plug in your charger.",
+        "gif": ""
+      },
+      {
+        "quote": "Fast ga type, slow ga aalochinchadam ippudu luxury ra!",
+        "note": "",
+        "gif": ""
+      }
     ]
   },
   "10m": {
     "emoji": "🔥",
     "lines": [
-      {"quote": "10 nimishaalu ra! Ippude upload cheyyi, aalochinchaku!", "note": "Submit now!", "gif": ""},
-      {"quote": "Clock cheppindi: ippude submit, ippude!", "note": "", "gif": ""},
-      {"quote": "Last minutes ra! Ippudu kaakapothe inkepudu? SUBMIT NOW!", "note": "", "gif": ""}
+      {
+        "quote": "10 nimishaalu ra! Ippude upload cheyyi, aalochinchaku!",
+        "note": "Submit now!",
+        "gif": ""
+      },
+      {
+        "quote": "Clock cheppindi: ippude submit, ippude!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Last minutes ra! Ippudu kaakapothe inkepudu? SUBMIT NOW!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Padi nimishaalu! Pen kaadu, mouse teeyyi, upload cheyyi!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Dhairyam ga cheyyi: select file, click upload, deep breath... DONE!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Ippude ippude ippude! Gadiyaram aarpadam ledu, nuvvu aagakura!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "10 nimishaalu: 9 lo upload, 1 lo prarthana!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Ee 10 nimishaalu lo hero evaro telusa? Submit chese nuvve!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Panic ippudu kaadu, submit ippude. Tarvata paniki panic chesko!",
+        "note": "",
+        "gif": ""
+      },
+      {
+        "quote": "Last chance train vellipothundi ra, ekki kurcho, upload cheyyi!",
+        "note": "",
+        "gif": ""
+      }
     ]
   }
 }

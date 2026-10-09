@@ -3,6 +3,7 @@ import asyncio
 import html
 import logging
 import os
+import random
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -30,6 +31,7 @@ from telegram.ext import (
     filters,
 )
 
+import gemini
 import ical
 import moodle
 import punchlines
@@ -58,34 +60,56 @@ DEFAULT_SITE = os.getenv("DEFAULT_SITE", "lms.kluniversity.in")
 ALLOW_ANY_SITE = os.getenv("ALLOW_ANY_SITE", "0") == "1"
 WEBAPP_URL = (os.getenv("WEBAPP_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/")  # public HTTPS URL of this server
 PORT = int(os.getenv("PORT", "8080"))
+ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").replace(" ", "").split(",") if x.isdigit()}
+SHARE_DEADLINES = os.getenv("GEMINI_SHARE_DEADLINES", "1") != "0"
+punchlines.init(db)
 
 def esc(text) -> str:
     """Escape for Telegram HTML (only & < > matter; quotes and apostrophes are fine as they are)."""
     return html.escape(str(text), quote=False)
 
 HELP = (
-    "<b>Moodle Reminder Bot</b>\n\n"
-    "Use the buttons under the chat box, or the commands below.\n\n"
-    "<b>Connect (takes 1 minute)</b>\n"
-    f"1. Open https://{DEFAULT_SITE}/calendar/export.php and log in\n"
-    "2. Events to export: <b>All events</b>. Time period: <b>Recent and next 60 days</b> (or custom range)\n"
-    "3. Click <b>Get calendar URL</b>, copy the link\n"
-    "4. Send it here: /calendar &lt;your link&gt;  (I delete your message right away)\n\n"
-    "Other ways: /token &lt;token&gt; or /login &lt;username&gt; &lt;password&gt; (needs Moodle web service)\n"
-    "/logout - remove your data\n\n"
-    "<b>View</b>\n"
-    "/today  /week  /upcoming  /overdue  /sync\n\n"
-    "<b>Customize</b>\n"
-    "/reminders 1d,6h,2h,1h,50m,10m - when to remind before a deadline (this is the default)\n"
-    "/style on|off - Telugu mass-style dialogues and GIFs in reminders (the Mass mode button toggles it)\n"
-    "/test 1h - preview a reminder (try 1d, 6h, 2h, 1h, 50m, 10m)\n"
-    "/menu - show the buttons again\n"
-    "/digest 08:00 (or /digest off) - daily summary time\n"
-    "/quiet 23:00 07:00 (or /quiet off) - no reminders at night\n"
+    "<b>What this bot does</b>\n"
+    "It reads your deadlines from LMS and pings you before each one, so you never miss a submission.\n\n"
+    "<b>Buttons under the chat box</b>\n"
+    "📅 Today / 📆 This week / ⏳ Upcoming / ⚠️ Overdue: your task lists\n"
+    "⚙️ Settings: tap the ON/OFF switches\n"
+    "🏆 My stats: your points, level and streak\n"
+    "🎲 Fun: a random meme, GIF or dialogue\n\n"
+    "<b>What each setting means</b>\n"
+    "🎬 <b>Mass mode</b>: a Telugu hero dialogue comes with every reminder\n"
+    "🖼 <b>Memes and GIFs</b>: a funny GIF, sticker or animation comes with reminders\n"
+    "🤖 <b>AI dialogues</b>: Gemini AI writes extra new dialogues so you rarely see the same one\n"
+    "🌅 <b>Daily digest</b>: one summary message every morning (08:00)\n"
+    "🌙 <b>Quiet hours</b>: no reminders at night (11 PM to 7 AM), except in the last hour\n"
+    "🔔 <b>Reminder times</b>: by default 24h, 6h, 2h, 1h, 50m and 10m before each deadline\n\n"
+    "<b>Ask me anything</b>\n"
+    "Just type a question like \"what is due tomorrow?\" or \"how do I plan my week?\". AI answers.\n\n"
+    "<b>Other commands</b>\n"
+    "/test 1h: preview a reminder (try 1d, 6h, 2h, 1h, 50m, 10m)\n"
+    "/reminders 1d,6h,1h: change reminder times\n"
+    "/mute &lt;course&gt; and /unmute: silence a course\n"
     "/timezone Asia/Kolkata\n"
-    "/mute &lt;text&gt; - mute a course by name  |  /unmute &lt;text&gt;\n"
-    "/settings - show current settings"
+    "/logout: delete all your data"
 )
+
+WELCOME_NEW = (
+    "👋 <b>Welcome!</b>\n\n"
+    f"Tap the button below to connect <b>{DEFAULT_SITE}</b>. Sign in once and I'll remind you before every deadline."
+)
+
+LEVELS = [(0, "Beginner 🐣"), (50, "Hero 🦸"), (150, "Mass Hero 🔥"), (400, "Power Star ⚡"), (1000, "Pan-India Star 🌟")]
+DICE = ["🎯", "🎲", "🏀", "⚽", "🎳", "🎰"]
+FUN_LINES = [
+    "Assignment cheyyaka pothe, memes kuda nee kosam raavu 😎",
+    "Break aipoindi ra, ippudu pani 💪",
+    "Thagganu le... kaani submit cheyyakunda thagganu 🔥",
+    "Nuvvu hero ra, kaani deadline villain 🎬",
+]
+
+
+def level_for(points: int) -> str:
+    return [name for need, name in LEVELS if points >= need][-1]
 
 
 # ---------- helpers ----------
@@ -116,11 +140,11 @@ def reminder_text(e, tz: str, header: str, style: dict | None) -> str:
 # Buttons shown permanently under the chat box (3 per row)
 BTN_TODAY, BTN_WEEK, BTN_UPCOMING = "📅 Today", "📆 This week", "⏳ Upcoming"
 BTN_OVERDUE, BTN_SETTINGS, BTN_HELP = "⚠️ Overdue", "⚙️ Settings", "❓ Help"
-BTN_REMINDERS, BTN_MASS, BTN_CONNECT = "🔔 Reminders", "🎬 Mass mode", "🔗 Connect"
+BTN_STATS, BTN_FUN, BTN_CONNECT = "🏆 My stats", "🎲 Fun", "🔗 Connect"
 MENU_ROWS = [
     [BTN_TODAY, BTN_WEEK, BTN_UPCOMING],
     [BTN_OVERDUE, BTN_SETTINGS, BTN_HELP],
-    [BTN_REMINDERS, BTN_MASS, BTN_CONNECT],
+    [BTN_STATS, BTN_FUN, BTN_CONNECT],
 ]
 
 
@@ -225,8 +249,8 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
                 db.set_snooze(chat_id, e["event_id"], 0)
                 if e["due_ts"] > now and not quiet:
                     left = e["due_ts"] - now
-                    style = await punchlines.build(left, left) if user["style"] else None
-                    await send_reminder(context, chat_id, e, tz, "Snooze over: ", style)
+                    style = await punchlines.build(left, left, bool(user["ai_lines"])) if user["style"] else None
+                    await send_reminder(context, chat_id, e, tz, "Snooze over: ", style, memes=bool(user["memes"]))
                 continue
             to_send, passed = due_reminder_offsets(
                 now, e["due_ts"], offsets, db.sent_offsets(chat_id, e["event_id"])
@@ -237,11 +261,11 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
             if quiet and not urgent:
                 continue  # will fire once quiet hours end
             db.mark_sent(chat_id, e["event_id"], passed)
-            style = await punchlines.build(to_send, e["due_ts"] - now) if user["style"] else None
-            await send_reminder(context, chat_id, e, tz, f"Reminder ({fmt_offset(to_send)} before): ", style)
+            style = await punchlines.build(to_send, e["due_ts"] - now, bool(user["ai_lines"])) if user["style"] else None
+            await send_reminder(context, chat_id, e, tz, f"Reminder ({fmt_offset(to_send)} before): ", style, memes=bool(user["memes"]))
 
 
-async def send_reminder(context, chat_id, e, tz, header, style=None, keyboard=True):
+async def send_reminder(context, chat_id, e, tz, header, style=None, keyboard=True, memes=False):
     text = reminder_text(e, tz, header, style)
     markup = event_keyboard(e) if keyboard else None
     try:
@@ -259,6 +283,30 @@ async def send_reminder(context, chat_id, e, tz, header, style=None, keyboard=Tr
         await context.bot.send_message(chat_id, text, parse_mode=ParseMode.HTML, reply_markup=markup)
     except Exception:
         log.exception("could not send reminder to %s", chat_id)
+    finally:
+        if memes and style:
+            await send_meme(context, chat_id, style.get("stage"), only_if_lucky=bool(style.get("gif")))
+
+
+async def send_meme(context, chat_id, stage=None, only_if_lucky=False) -> bool:
+    """A random meme/GIF/sticker taught by the admin (matching the stage or 'any'), else a Telegram dice animation."""
+    if only_if_lucky and random.random() > 0.35:
+        return False  # reminder already had a GIF: only sometimes add another
+    try:
+        now = int(time.time())
+        tags = [t for t in (stage, "any") if t]
+        rows = db.media_free(tags, now - 86400)
+        row = random.choice(rows) if rows else (db.media_oldest(tags) if random.random() < 0.7 else None)
+        if row:
+            db.media_touch(row["file_unique_id"], now)
+            send = getattr(context.bot, {"animation": "send_animation", "sticker": "send_sticker", "photo": "send_photo"}[row["kind"]])
+            await send(chat_id, row["file_id"])
+            return True
+        await context.bot.send_dice(chat_id, emoji=random.choice(DICE))
+        return True
+    except Exception:
+        log.exception("meme send failed")
+        return False
 
 
 async def digest_job(context: ContextTypes.DEFAULT_TYPE):
@@ -303,12 +351,9 @@ async def send_list(bot, user, title, days=None, overdue=False):
 # ---------- commands ----------
 async def cmd_connect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if WEBAPP_URL:
-        kb = InlineKeyboardMarkup(
-            [[InlineKeyboardButton(f"Connect {DEFAULT_SITE}", web_app=WebAppInfo(url=f"{WEBAPP_URL}/connect"))]]
-        )
-        await update.message.reply_text(
+        await update.effective_message.reply_text(
             f"Tap the button, sign in to {DEFAULT_SITE}, and I'll fetch your deadlines automatically.",
-            reply_markup=kb,
+            reply_markup=connect_markup(),
         )
     else:
         await update.message.reply_text(
@@ -317,12 +362,37 @@ async def cmd_connect(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if WEBAPP_URL:
-        await cmd_connect(update, context)
-    await update.message.reply_text(
-        HELP, parse_mode=ParseMode.HTML, disable_web_page_preview=True, reply_markup=main_keyboard()
+def connect_markup():
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton(f"🔗 Connect {DEFAULT_SITE}", web_app=WebAppInfo(url=f"{WEBAPP_URL}/connect"))]]
     )
+
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user = db.get_user(chat_id)
+    if user and user["token_enc"]:
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🚪 Logout", callback_data="lo:ask")]])
+        await update.message.reply_text("Menu buttons are ready 👇", reply_markup=main_keyboard())
+        await update.message.reply_text(
+            "✅ <b>You are already logged in.</b>\n\nDo you want to log out?",
+            parse_mode=ParseMode.HTML, reply_markup=kb,
+        )
+        return
+    msg = await update.message.reply_text("🎬 Starting...", reply_markup=main_keyboard())
+    for frame in ("🎬 Starting.. ⏳", "🎬 Starting... 🔥", "🎬 Ready! 🚀"):  # tiny loading animation
+        await asyncio.sleep(0.5)
+        try:
+            await msg.edit_text(frame)
+        except Exception:
+            break
+    if WEBAPP_URL:
+        await update.message.reply_text(WELCOME_NEW, parse_mode=ParseMode.HTML, reply_markup=connect_markup())
+    else:
+        await update.message.reply_text(
+            f"Open https://{DEFAULT_SITE}/calendar/export.php, choose All events, click Get calendar URL, "
+            "then send: /calendar <your link>"
+        )
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -448,8 +518,11 @@ async def cmd_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_logout(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    db.delete_user(update.effective_chat.id)
-    await update.message.reply_text("Done. Your token and all stored data were deleted.")
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Yes, log out", callback_data="lo:yes"),
+        InlineKeyboardButton("↩️ Cancel", callback_data="lo:no"),
+    ]])
+    await update.message.reply_text("Log out and delete all your data from this bot?", reply_markup=kb)
 
 
 async def cmd_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -610,32 +683,159 @@ async def cmd_style(update, context):
     )
 
 
+def _onoff(v) -> str:
+    return "ON ✅" if v else "OFF ❌"
+
+
+def settings_panel(user):
+    quiet = bool(user["quiet_start"])
+    rows = [
+        [InlineKeyboardButton(f"🎬 Mass mode: {_onoff(user['style'])}", callback_data="set:style")],
+        [InlineKeyboardButton(f"🖼 Memes & GIFs: {_onoff(user['memes'])}", callback_data="set:memes")],
+        [InlineKeyboardButton(f"🤖 AI dialogues: {_onoff(user['ai_lines'])}", callback_data="set:ai_lines")],
+        [InlineKeyboardButton(f"🌅 Daily digest: {_onoff(user['digest_time'])}", callback_data="set:digest")],
+        [InlineKeyboardButton(f"🌙 Quiet hours: {_onoff(quiet)}", callback_data="set:quiet")],
+        [
+            InlineKeyboardButton("🔔 Reminder times", callback_data="set:times"),
+            InlineKeyboardButton("🧪 Test", callback_data="set:test"),
+        ],
+        [InlineKeyboardButton("🚪 Logout", callback_data="lo:ask")],
+    ]
+    text = (
+        "⚙️ <b>Settings</b>\nTap a switch to turn it ON or OFF.\n\n"
+        f"🔔 Reminders: <b>{esc(user['offsets'])}</b> before each deadline\n"
+        f"🌅 Digest: {esc(user['digest_time'] or 'off')}  🌙 Quiet: "
+        f"{esc(user['quiet_start'] + '-' + user['quiet_end']) if quiet else 'off'}\n"
+        f"🕐 Timezone: {esc(user['tz'])}\n\nNot sure what a switch does? Open ❓ Help."
+    )
+    return text, InlineKeyboardMarkup(rows)
+
+
 async def cmd_settings(update, context):
     user = await require_login(update)
     if not user:
         return
-    quiet = f"{user['quiet_start']} to {user['quiet_end']}" if user["quiet_start"] else "off"
-    muted = ", ".join(m["course"] for m in db.muted_courses(user["chat_id"])) or "none"
+    text, kb = settings_panel(user)
+    await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+
+
+async def cmd_stats(update, context):
+    user = await require_login(update)
+    if not user:
+        return
+    st = db.get_stats(user["chat_id"])
+    nxt = next((n for n in LEVELS if n[0] > st["points"]), None)
+    bar_to = f"\nNext level in {nxt[0] - st['points']} points" if nxt else "\nMax level reached!"
+    await update.effective_message.reply_text(
+        f"🏆 <b>Your stats</b>\n\nLevel: <b>{level_for(st['points'])}</b>\nPoints: {st['points']}{bar_to}\n"
+        f"✅ Submitted: {st['submitted']}  ⚡ Early: {st['early']}\n"
+        f"🔥 Streak: {st['streak']} day(s)  (best {st['best_streak']})\n\n"
+        "You earn 10 points for every task you mark Submitted, +5 if it was more than a day before the deadline.",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def cmd_fun(update, context):
+    chat_id = update.effective_chat.id
+    await update.effective_message.reply_text(random.choice(FUN_LINES))
+    await send_meme(context, chat_id, random.choice(["1d", "6h", "2h", "1h", "50m", "10m"]))
+
+
+async def cmd_addmeme_help(update, context):
     await update.message.reply_text(
-        f"Telegram ID: {user['chat_id']}\nLMS user ID: {user['moodle_userid'] or 'unknown'}\n"
-        f"Site: {user['site_url']}\nTimezone: {user['tz']}\nReminders: {user['offsets']}\n"
-        f"Daily digest: {user['digest_time'] or 'off'}\nQuiet hours: {quiet}\nMuted courses: {muted}\n"
-        f"Mass mode (dialogues + GIFs): {'on' if user['style'] else 'off'}"
+        "Admin: send me a GIF, sticker or photo with the caption <code>meme any</code> (or <code>meme 1h</code>, "
+        "<code>meme 10m</code>...) and I'll use it in reminders.", parse_mode=ParseMode.HTML,
+    )
+
+
+async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin teaches the bot a meme/GIF/sticker: send it with caption 'meme <stage|any>'."""
+    m = update.message
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    caption = (m.caption or "").lower().split()
+    tag = caption[1] if len(caption) > 1 and caption[0] == "meme" else None
+    if tag is None and not m.sticker:
+        return
+    tag = tag or "any"
+    if tag != "any":
+        try:
+            tag = punchlines.stage_for(parse_offsets(tag)[0])
+        except ValueError:
+            await m.reply_text("Unknown stage. Use any, 1d, 6h, 2h, 1h, 50m or 10m.")
+            return
+    obj, kind = (m.animation, "animation") if m.animation else (m.sticker, "sticker") if m.sticker else (m.photo[-1], "photo") if m.photo else (None, None)
+    if obj is None:
+        return
+    db.media_add(obj.file_unique_id, obj.file_id, kind, tag, update.effective_user.id, int(time.time()))
+    await m.reply_text(f"Saved as {kind} for stage: {tag}")
+
+
+async def cmd_botstats(update, context):
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    media = ", ".join(f"{r['tag']}/{r['kind']}: {r['n']}" for r in db.media_counts()) or "none"
+    pool = db.pool_counts(int(time.time()) - 3 * 86400)
+    lines = ", ".join(f"{k}: {v[0]}/{v[1]}" for k, v in sorted(pool.items()))
+    await update.message.reply_text(
+        f"Users: {db.count_users()}\nDialogue pool (free/total): {lines}\nMemes: {media}\nGemini: {'on' if gemini.enabled() else 'off'}"
     )
 
 
 MENU_ACTIONS = {
     BTN_TODAY: cmd_today, BTN_WEEK: cmd_week, BTN_UPCOMING: cmd_upcoming,
     BTN_OVERDUE: cmd_overdue, BTN_SETTINGS: cmd_settings, BTN_HELP: cmd_help,
-    BTN_REMINDERS: cmd_reminders, BTN_MASS: cmd_style, BTN_CONNECT: cmd_connect,
+    BTN_STATS: cmd_stats, BTN_FUN: cmd_fun, BTN_CONNECT: cmd_connect,
 }
+_chat_times: dict[int, list[float]] = {}
 
 
-async def on_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """A tap on one of the permanent buttons arrives as plain text: run the matching command."""
-    action = MENU_ACTIONS.get((update.message.text or "").strip())
+async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Menu button taps arrive as text and run their command; any other text is a question for Gemini."""
+    text = (update.message.text or "").strip()
+    action = MENU_ACTIONS.get(text)
     if action:
         await action(update, context)
+        return
+    if not gemini.enabled():
+        await update.message.reply_text("Use the buttons below or /help. (AI answers are off: the admin has not set GEMINI_API_KEY.)")
+        return
+    chat_id = update.effective_chat.id
+    now = time.time()
+    recent = [t for t in _chat_times.get(chat_id, []) if now - t < 60]
+    if len(recent) >= 6:
+        await update.message.reply_text("Slow down a little 😅 Try again in a minute.")
+        return
+    _chat_times[chat_id] = recent + [now]
+    user = db.get_user(chat_id)
+    tz = user["tz"] if user else "Asia/Kolkata"
+    deadlines = "The student is not connected, so you know no deadlines."
+    if user and user["token_enc"]:
+        if SHARE_DEADLINES:
+            evs = db.pending_events(chat_id, since=int(now) - 86400)[:15]
+            deadlines = ("Pending tasks:\n" + "\n".join(f"- {e['name']} ({e['course']}) due {fmt_due(e['due_ts'], tz)}" for e in evs)) if evs else "The student has no pending tasks."
+        else:
+            deadlines = "You have no access to the student's deadlines."
+    await context.bot.send_chat_action(chat_id, "typing")
+    history = context.user_data.setdefault("hist", [])
+    try:
+        stamp = datetime.now(ZoneInfo(tz)).strftime("%a %d %b %Y %H:%M")
+    except ZoneInfoNotFoundError:
+        stamp = datetime.now().strftime("%a %d %b %Y %H:%M")
+    answer = await gemini.chat(text, history, deadlines, DEFAULT_SITE, tz, stamp)
+    if not answer:
+        await update.message.reply_text("I couldn't think of an answer right now. Try again, or use the buttons.")
+        return
+    history += [("user", text[:800]), ("model", answer[:800])]
+    del history[:-8]
+    await update.message.reply_text(answer[:3500])
+
+
+async def pool_job(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await punchlines.refill_once()
+    except Exception:
+        log.exception("pool refill failed")
 
 
 # ---------- inline buttons ----------
@@ -645,14 +845,85 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = q.data.split(":")
     action = parts[0]
     if action == "done":
+        ev = db.get_event(chat_id, int(parts[1]))
         db.mark_done(chat_id, int(parts[1]))
-        await q.answer("Marked as submitted")
-        await q.edit_message_text(q.message.text + "\n\nMarked as submitted.")
+        tz = (db.get_user(chat_id) or {"tz": "Asia/Kolkata"})["tz"]
+        try:
+            zone = ZoneInfo(tz)
+        except ZoneInfoNotFoundError:
+            zone = ZoneInfo("Asia/Kolkata")
+        today = datetime.now(zone).date()
+        early = bool(ev) and ev["due_ts"] - time.time() > 86400
+        st = db.record_submit(chat_id, 15 if early else 10, early, today.isoformat(), (today - timedelta(days=1)).isoformat())
+        await q.answer("Marked as submitted 🎉")
+        try:
+            await q.edit_message_text(
+                (q.message.text or q.message.caption or "") + f"\n\n✅ Submitted! +{15 if early else 10} points • 🔥 {st['streak']} day streak • {level_for(st['points'])}"
+            )
+        except BadRequest:
+            await q.edit_message_reply_markup(None)
+        try:
+            await context.bot.send_dice(chat_id, emoji=random.choice(["🎯", "🏀", "🎳"]))
+        except Exception:
+            pass
     elif action == "snz":
         until = int(time.time()) + int(parts[2]) * 60
         db.set_snooze(chat_id, int(parts[1]), until)
         await q.answer("Snoozed")
         await q.edit_message_reply_markup(None)
+    elif action == "lo":
+        if parts[1] == "ask":
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Yes, log out", callback_data="lo:yes"),
+                InlineKeyboardButton("↩️ Cancel", callback_data="lo:no"),
+            ]])
+            await q.answer()
+            await q.message.reply_text("Log out and delete all your data from this bot?", reply_markup=kb)
+        elif parts[1] == "yes":
+            db.delete_user(chat_id)
+            await q.answer("Logged out")
+            await q.edit_message_text("👋 Logged out. All your data was deleted. Send /start to connect again.")
+        else:
+            await q.answer("Cancelled")
+            await q.edit_message_text("Okay, you stay logged in ✅")
+    elif action == "set":
+        user = db.get_user(chat_id)
+        if not user:
+            await q.answer("Not connected")
+            return
+        key = parts[1]
+        if key in ("style", "memes", "ai_lines"):
+            db.set_field(chat_id, key, 0 if user[key] else 1)
+        elif key == "digest":
+            db.set_field(chat_id, "digest_time", None if user["digest_time"] else "08:00")
+        elif key == "quiet":
+            if user["quiet_start"]:
+                db.set_field(chat_id, "quiet_start", None)
+                db.set_field(chat_id, "quiet_end", None)
+            else:
+                db.set_field(chat_id, "quiet_start", "23:00")
+                db.set_field(chat_id, "quiet_end", "07:00")
+        elif key == "times":
+            await q.answer()
+            await q.message.reply_text(
+                f"Current reminders: {user['offsets']}\nChange them like this: /reminders 3d,1d,6h,1h (m = minutes, h = hours, d = days)"
+            )
+            return
+        elif key == "test":
+            await q.answer("Sending a preview")
+            secs = random.choice(parse_offsets("1d,6h,2h,1h,50m,10m"))
+            sample = {"event_id": -1, "course_id": 0, "name": "Sample assignment", "course": "Preview only",
+                      "due_ts": int(time.time()) + secs, "url": ""}
+            st = await punchlines.build(secs, secs, bool(user["ai_lines"])) if user["style"] else None
+            await send_reminder(context, chat_id, sample, user["tz"], f"Reminder ({fmt_offset(secs)} before): ", st, False, bool(user["memes"]))
+            return
+        user = db.get_user(chat_id)
+        text, kb = settings_panel(user)
+        await q.answer("Saved")
+        try:
+            await q.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        except BadRequest:
+            pass
     elif action == "mute":
         cid = int(parts[1])
         name = next((e["course"] for e in db.pending_events(chat_id, include_muted=True) if e["course_id"] == cid), "course")
@@ -678,9 +949,10 @@ async def post_init(app: Application):
         BotCommand("upcoming", "Upcoming deadlines"),
         BotCommand("overdue", "Overdue tasks"),
         BotCommand("reminders", "Change reminder times"),
-        BotCommand("style", "Mass mode on/off"),
+        BotCommand("stats", "My points and streak"),
+        BotCommand("fun", "Random meme or GIF"),
         BotCommand("test", "Preview a reminder"),
-        BotCommand("settings", "Show my settings"),
+        BotCommand("settings", "Settings (ON/OFF switches)"),
         BotCommand("menu", "Show the buttons again"),
         BotCommand("help", "Help"),
     ])
@@ -710,15 +982,18 @@ def main():
         "upcoming": cmd_upcoming, "overdue": cmd_overdue, "reminders": cmd_reminders,
         "digest": cmd_digest, "quiet": cmd_quiet, "timezone": cmd_timezone,
         "mute": cmd_mute, "unmute": cmd_unmute, "settings": cmd_settings, "style": cmd_style,
+        "stats": cmd_stats, "fun": cmd_fun, "botstats": cmd_botstats, "addmeme": cmd_addmeme_help,
     }
     for name, fn in handlers.items():
         app.add_handler(CommandHandler(name, fn))
     app.add_handler(CallbackQueryHandler(on_button))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_menu_text))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+    app.add_handler(MessageHandler(filters.ANIMATION | filters.Sticker.ALL | filters.PHOTO, on_media))
 
     app.job_queue.run_repeating(sync_job, interval=SYNC_MINUTES * 60, first=30)
     app.job_queue.run_repeating(reminder_job, interval=60, first=45)
     app.job_queue.run_repeating(digest_job, interval=60, first=50)
+    app.job_queue.run_repeating(pool_job, interval=60, first=20)
     if os.getenv("RENDER") and WEBAPP_URL:
         app.job_queue.run_repeating(ping_job, interval=600, first=120)
     log.info("Bot started")
