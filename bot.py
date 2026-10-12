@@ -61,6 +61,8 @@ ALLOW_ANY_SITE = os.getenv("ALLOW_ANY_SITE", "0") == "1"
 WEBAPP_URL = (os.getenv("WEBAPP_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/")  # public HTTPS URL of this server
 PORT = int(os.getenv("PORT", "8080"))
 ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").replace(" ", "").split(",") if x.isdigit()}
+GROUP_URL = os.getenv("GROUP_INVITE_URL", "").strip()  # invite link of your students' Telegram group
+BOT_USERNAME = os.getenv("BOT_USERNAME", "").lstrip("@")
 SHARE_DEADLINES = os.getenv("GEMINI_SHARE_DEADLINES", "1") != "0"
 punchlines.init(db)
 
@@ -125,6 +127,25 @@ async def send_fx(bot, chat_id, text, effect=None, **kw):
         except Exception:
             pass
     return await bot.send_message(chat_id, text, **kw)
+
+
+def share_url() -> str:
+    if not BOT_USERNAME:
+        return ""
+    from urllib.parse import quote
+    return (f"https://t.me/share/url?url={quote('https://t.me/' + BOT_USERNAME)}"
+            f"&text={quote('Never miss an LMS deadline! This bot reminds you before every assignment 🔥')}")
+
+
+def extras_markup(logout=False):
+    rows = []
+    if share_url():
+        rows.append([InlineKeyboardButton("📣 Share with friends", url=share_url())])
+    if GROUP_URL:
+        rows.append([InlineKeyboardButton("👥 Join our community", url=GROUP_URL)])
+    if logout:
+        rows.append([InlineKeyboardButton("🚪 Logout", callback_data="lo:ask")])
+    return InlineKeyboardMarkup(rows) if rows else None
 
 
 def level_for(points: int) -> str:
@@ -394,27 +415,33 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user = db.get_user(chat_id)
     if user and user["token_enc"]:
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🚪 Logout", callback_data="lo:ask")]])
+        kb = extras_markup(logout=True)
         await update.message.reply_text("Menu buttons are ready 👇", reply_markup=main_keyboard())
         await update.message.reply_text(
             "✅ <b>You are already logged in.</b>\n\nDo you want to log out?",
             parse_mode=ParseMode.HTML, reply_markup=kb,
         )
         return
-    msg = await update.message.reply_text("🎬 Starting...", reply_markup=main_keyboard())
-    for frame in ("🎬 Starting.. ⏳", "🎬 Starting... 🔥", "🎬 Ready! 🚀"):  # tiny loading animation
-        await asyncio.sleep(0.5)
+    name = esc(update.effective_user.first_name or "friend")
+    hello = f"👋 <b>Hello {name}!</b> Welcome to the LMS Reminder Bot 🎓\n\nI remind you before every deadline, with some Telugu mass dialogues 🔥"
+    await update.message.reply_text("🎬", reply_markup=main_keyboard())
+    if not WEBAPP_URL:
+        await update.message.reply_text(
+            hello + f"\n\nOpen https://{DEFAULT_SITE}/calendar/export.php, choose All events, click Get calendar URL, "
+            "then send: /calendar <your link>", parse_mode=ParseMode.HTML,
+        )
+        return
+    kb = connect_markup()
+    msg = await update.message.reply_text(hello + "\n\n👇", parse_mode=ParseMode.HTML, reply_markup=kb)
+    for finger in ("👇", "☝️", "👇", "☝️", "👇"):  # pointing finger bounces at the Connect button
+        await asyncio.sleep(0.45)
         try:
-            await msg.edit_text(frame)
+            await msg.edit_text(hello + f"\n\n{finger} <b>Tap Connect below to link your LMS</b> {finger}",
+                                parse_mode=ParseMode.HTML, reply_markup=kb)
         except Exception:
             break
-    if WEBAPP_URL:
-        await update.message.reply_text(WELCOME_NEW, parse_mode=ParseMode.HTML, reply_markup=connect_markup())
-    else:
-        await update.message.reply_text(
-            f"Open https://{DEFAULT_SITE}/calendar/export.php, choose All events, click Get calendar URL, "
-            "then send: /calendar <your link>"
-        )
+    if extras_markup():
+        await update.message.reply_text("📣 Know someone who forgets deadlines? Invite them!", reply_markup=extras_markup())
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -446,6 +473,14 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_reminder(context, chat_id, sample, tz, f"Reminder ({fmt_offset(secs)} before): ", style, keyboard=False)
 
 
+async def notify_admins(bot, text):
+    for aid in ADMIN_IDS:
+        try:
+            await bot.send_message(aid, text)
+        except Exception:
+            log.warning("could not message admin %s", aid)
+
+
 async def link_calendar(app: Application, chat_id: int, url: str):
     """Called by the Mini App: store the calendar link with the Telegram id and run the first sync."""
     url = ical.validate_url(url, None if ALLOW_ANY_SITE else DEFAULT_SITE)
@@ -459,6 +494,9 @@ async def link_calendar(app: Application, chat_id: int, url: str):
         "Tap <b>⚙️ Settings</b> to try a preview, and press <b>Submitted</b> on a reminder when you finish a task.",
         FX_PARTY, parse_mode=ParseMode.HTML, reply_markup=main_keyboard(),
     )
+    if extras_markup():
+        await app.bot.send_message(chat_id, "📣 Invite your friends so they never miss a deadline either:", reply_markup=extras_markup())
+    await notify_admins(app.bot, f"🆕 New user connected (Telegram ID {chat_id}). Total users: {db.count_users()}")
 
 
 async def _finish_login(update, context, site, token, source="api"):
@@ -478,6 +516,9 @@ async def _finish_login(update, context, site, token, source="api"):
         f"🎉 <b>You're in, {esc(who)}!</b> 🥳\n\nI found <b>{count}</b> pending task(s). Reminders: {esc(user['offsets'])}.{esc(note)}",
         FX_PARTY, parse_mode=ParseMode.HTML, reply_markup=main_keyboard(),
     )
+    if extras_markup():
+        await context.bot.send_message(chat_id, "📣 Invite your friends so they never miss a deadline either:", reply_markup=extras_markup())
+    await notify_admins(context.bot, f"🆕 New user connected (Telegram ID {chat_id}). Total users: {db.count_users()}")
 
 
 async def cmd_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -721,6 +762,7 @@ def settings_panel(user):
             InlineKeyboardButton("🔔 Reminder times", callback_data="set:times"),
             InlineKeyboardButton("🧪 Test", callback_data="set:test"),
         ],
+        [InlineKeyboardButton("💡 Send feedback to admin", callback_data="fb:ask")],
         [InlineKeyboardButton("🚪 Logout", callback_data="lo:ask")],
     ]
     text = (
@@ -817,7 +859,13 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     action = MENU_ACTIONS.get(text)
     if action:
+        context.user_data.pop("await_fb", None)
         await action(update, context)
+        return
+    if context.user_data.pop("await_fb", False):
+        u = update.effective_user
+        await notify_admins(context.bot, f"💡 Feedback from {u.full_name} (@{u.username or '-'}, ID {u.id}):\n\n{text[:1500]}")
+        await update.message.reply_text("🙏 Thank you! Your message was sent to the admin.")
         return
     if not gemini.enabled():
         await update.message.reply_text("Use the buttons below or /help. (AI answers are off: the admin has not set GEMINI_API_KEY.)")
@@ -912,6 +960,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await q.answer("Cancelled")
             await q.edit_message_text("Okay, you stay logged in ✅")
+    elif action == "fb":
+        context.user_data["await_fb"] = True
+        await q.answer()
+        await q.message.reply_text("💡 Type your idea, problem or message now. I'll send it to the admin.")
     elif action == "tp":
         name, value, desc = PRESETS[int(parts[1])]
         db.set_field(chat_id, "offsets", value)
@@ -988,11 +1040,17 @@ async def post_init(app: Application):
         BotCommand("menu", "Show the buttons again"),
         BotCommand("help", "Help"),
     ])
+    global BOT_USERNAME
+    if not BOT_USERNAME:
+        try:
+            BOT_USERNAME = (await app.bot.get_me()).username or ""
+        except Exception:
+            log.warning("could not read bot username")
     app.bot_data["gif_check"] = asyncio.create_task(punchlines.verify_gifs())  # keep a reference
     if not WEBAPP_URL:
         log.info("WEBAPP_URL not set: Connect button disabled, /calendar still works")
         return
-    runner = web.AppRunner(webapp.create_app(BOT_TOKEN, lambda cid, url: link_calendar(app, cid, url), DEFAULT_SITE))
+    runner = web.AppRunner(webapp.create_app(BOT_TOKEN, lambda cid, url: link_calendar(app, cid, url), DEFAULT_SITE, share_url(), GROUP_URL))
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
     app.bot_data["web_runner"] = runner

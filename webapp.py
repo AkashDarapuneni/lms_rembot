@@ -51,23 +51,44 @@ button:active{transform:scale(.97)} button:disabled{opacity:.6}
 .shake{animation:shake .4s} @keyframes shake{25%{transform:translateX(-8px)}75%{transform:translateX(8px)}}
 .ok .logo{animation:pop .6s ease both} @keyframes pop{from{transform:scale(.3)}to{transform:scale(1)}}
 canvas{position:fixed;inset:0;pointer-events:none;z-index:1}
-.lock{font-size:12px;opacity:.7;margin-top:14px}
+.lock{font-size:12px;opacity:.75;margin-top:14px}
+.lbl{text-align:left;font-size:13px;font-weight:700;margin:8px 4px 0}.lbl span{font-weight:400;opacity:.7;font-size:12px}
+.steps{font-size:13px;opacity:.9;margin-top:12px}
+.share{margin-top:18px;padding-top:14px;border-top:1px dashed rgba(255,255,255,.35)}
+.sh{font-weight:700;margin-bottom:4px;animation:pulse 1.8s ease-in-out infinite}
+@keyframes pulse{50%{transform:scale(1.06)}}
+.sbtn{margin-top:8px;padding:12px;font-size:15px;color:#fff;background:rgba(255,255,255,.2);box-shadow:none;border:1px solid rgba(255,255,255,.4);animation:wiggle 3s ease-in-out infinite}
+.sbtn.g{background:rgba(78,205,196,.35)}
+@keyframes wiggle{0%,86%,100%{transform:rotate(0)}90%{transform:rotate(-2deg)}94%{transform:rotate(2deg)}}
 </style></head><body>
 <canvas id="c"></canvas>
 <div class="card" id="card">
   <div class="logo" id="logo">🎓</div>
-  <h2 id="title">Connect your LMS</h2>
-  <p id="sub">Sign in to <span class="site">__SITE__</span> once. I'll fetch your deadlines and remind you before each one.</p>
+  <h2 id="title">Login with your LMS</h2>
+  <p id="sub">Use the same details you use on <span class="site">__SITE__</span></p>
   <div id="form">
-    <input id="u" placeholder="👤  Username or email" autocomplete="username">
-    <input id="p" type="password" placeholder="🔒  Password" autocomplete="current-password">
+    <div class="lbl">👤 Username <span>e.g. 23000xxxxx (your ID number)</span></div>
+    <input id="u" placeholder="23000xxxxx" inputmode="text" autocomplete="username">
+    <div class="lbl">🔒 Password <span>your LMS password</span></div>
+    <input id="p" type="password" placeholder="Your LMS password" autocomplete="current-password">
     <button id="go">Connect 🚀</button>
+    <div class="steps">✨ That's it! I link your LMS automatically and fetch your deadlines.</div>
   </div>
   <div id="msg"></div>
-  <div class="lock">🔐 Your password is used once and never stored.</div>
+  <div class="lock">🔐 Your password is used once to link your account. It is never stored.</div>
+  <div class="share" id="share">
+    <div class="sh">📣 Share with your friends</div>
+    <button class="sbtn" id="shbtn">Invite friends 💌</button>
+    <button class="sbtn g" id="grbtn" style="display:none">Join our community 👥</button>
+  </div>
 </div>
 <script>
 const tg=window.Telegram.WebApp; tg.ready(); tg.expand();
+const SHARE=__SHARE__, GROUP=__GROUP__;
+const shbtn=document.getElementById('shbtn'), grbtn=document.getElementById('grbtn');
+if(!SHARE) document.getElementById('share').style.display='none';
+shbtn.onclick=()=>{try{tg.openTelegramLink(SHARE)}catch(e){window.open(SHARE)}};
+if(GROUP){grbtn.style.display='block'; grbtn.onclick=()=>{try{tg.openTelegramLink(GROUP)}catch(e){window.open(GROUP)}};}
 const msg=document.getElementById('msg'), card=document.getElementById('card');
 const cv=document.getElementById('c'), cx=cv.getContext('2d');
 function confetti(){
@@ -101,13 +122,15 @@ document.getElementById('go').onclick=async()=>{
 </script></body></html>"""
 
 
-def create_app(bot_token: str, on_connect, site: str) -> web.Application:
+def create_app(bot_token: str, on_connect, site: str, share_url: str = "", group_url: str = "") -> web.Application:
     """on_connect(chat_id, calendar_url) is awaited once the link is obtained."""
     attempts: dict[int, list[float]] = {}
 
     async def page(request):
         return web.Response(
-            text=PAGE.replace("__SITE__", site),
+            text=PAGE.replace("__SITE__", site)
+            .replace("__SHARE__", json.dumps(share_url).replace("<", "\\u003c"))
+            .replace("__GROUP__", json.dumps(group_url).replace("<", "\\u003c")),
             content_type="text/html",
             headers={"Cache-Control": "no-store"},
         )
