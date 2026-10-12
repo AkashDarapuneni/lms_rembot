@@ -55,3 +55,7 @@ Gemini answers use the student's pending task names as context; set `GEMINI_SHAR
 - `/broadcast your message` (admin only): sends to all connected students.
 - Daily 03:00 IST: backup of the users table sent to the admin(s) as a JSON file (links stay encrypted with SECRET_KEY). Needs `ADMIN_IDS`.
 - Errors: the admin gets a Telegram alert (max one per 10 minutes).
+
+## Becoming admin without any setting
+1. In Render open your service > **Logs**. Right after each start there is a line `ADMIN CLAIM CODE (this run only): xxxxxxxx`.
+2. Send your bot: `/admin xxxxxxxx`. You are saved as admin in the database (it survives restarts). `/admin` then opens the admin panel (Broadcast, Stats, Backup now).

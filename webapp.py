@@ -100,6 +100,13 @@ function confetti(){
     ps.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.a+=.1;cx.save();cx.translate(p.x,p.y);cx.rotate(p.a);cx.fillStyle=p.c;cx.fillRect(-p.r,-p.r/2,p.r*2,p.r);cx.restore()});
     if(++t<220) requestAnimationFrame(f); else cx.clearRect(0,0,cv.width,cv.height)})();
 }
+fetch('/api/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({initData:tg.initData})})
+ .then(r=>r.json()).then(d=>{ if(d.linked){
+   document.getElementById('form').style.display='none';
+   document.getElementById('logo').textContent='✅'; document.getElementById('title').textContent='You are already logged in';
+   document.getElementById('sub').textContent='Your LMS is linked and reminders are ON. To log out, use the Logout button in the chat.';
+   document.querySelector('.lock').style.display='none';
+ }}).catch(()=>{});
 document.getElementById('go').onclick=async()=>{
   const btn=document.getElementById('go'); btn.disabled=true; msg.textContent='⏳ Connecting...';
   try{
@@ -122,7 +129,7 @@ document.getElementById('go').onclick=async()=>{
 </script></body></html>"""
 
 
-def create_app(bot_token: str, on_connect, site: str, share_url: str = "", group_url: str = "") -> web.Application:
+def create_app(bot_token: str, on_connect, site: str, share_url: str = "", group_url: str = "", is_linked=None) -> web.Application:
     """on_connect(chat_id, calendar_url) is awaited once the link is obtained."""
     attempts: dict[int, list[float]] = {}
 
@@ -166,6 +173,14 @@ def create_app(bot_token: str, on_connect, site: str, share_url: str = "", group
             return web.json_response({"ok": False, "error": "Saved login failed. Try /calendar instead."}, status=500)
         return web.json_response({"ok": True})
 
+    async def status(request):
+        try:
+            body = await request.json()
+            user = verify_init_data(body["initData"], bot_token)
+        except Exception:
+            return web.json_response({"linked": False})
+        return web.json_response({"linked": bool(is_linked and is_linked(int(user["id"])))})
+
     async def health(request):
         return web.Response(text="ok")
 
@@ -174,4 +189,5 @@ def create_app(bot_token: str, on_connect, site: str, share_url: str = "", group
     app.router.add_get("/", health)
     app.router.add_get("/connect", page)
     app.router.add_post("/api/connect", connect)
+    app.router.add_post("/api/status", status)
     return app

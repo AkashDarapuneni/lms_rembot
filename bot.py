@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import random
+import secrets
 import time
 from datetime import datetime, time as dtime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -15,6 +16,7 @@ import httpx
 from dotenv import load_dotenv
 from telegram import (
     BotCommand,
+    BotCommandScopeChat,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
@@ -67,6 +69,18 @@ GROUP_URL = os.getenv("GROUP_INVITE_URL", "").strip()  # invite link of your stu
 BOT_USERNAME = os.getenv("BOT_USERNAME", "").lstrip("@")
 SHARE_DEADLINES = os.getenv("GEMINI_SHARE_DEADLINES", "1") != "0"
 punchlines.init(db)
+ADMIN_CODE = secrets.token_hex(4)  # one-time claim code, printed in the Render log at every start
+
+
+def admin_ids() -> set:
+    try:
+        return ADMIN_IDS | db.admin_ids()
+    except Exception:
+        return set(ADMIN_IDS)
+
+
+def is_admin(uid) -> bool:
+    return uid in admin_ids()
 
 def esc(text) -> str:
     """Escape for Telegram HTML (only & < > matter; quotes and apostrophes are fine as they are)."""
@@ -410,6 +424,13 @@ async def send_list(bot, user, title, days=None, overdue=False):
 
 # ---------- commands ----------
 async def cmd_connect(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = db.get_user(update.effective_chat.id)
+    if user and user["token_enc"]:
+        await update.effective_message.reply_text(
+            "✅ <b>You are already logged in.</b>\n\nDo you want to log out?",
+            parse_mode=ParseMode.HTML, reply_markup=extras_markup(logout=True),
+        )
+        return
     if WEBAPP_URL:
         await update.effective_message.reply_text(
             f"Tap the button, sign in to {DEFAULT_SITE}, and I'll fetch your deadlines automatically.",
@@ -491,7 +512,7 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def notify_admins(bot, text):
-    for aid in ADMIN_IDS:
+    for aid in admin_ids():
         try:
             await bot.send_message(aid, text)
         except Exception:
@@ -835,7 +856,7 @@ async def cmd_addmeme_help(update, context):
 async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin teaches the bot a meme/GIF/sticker: send it with caption 'meme <stage|any>'."""
     m = update.message
-    if update.effective_user.id not in ADMIN_IDS:
+    if not is_admin(update.effective_user.id):
         return
     caption = (m.caption or "").lower().split()
     tag = caption[1] if len(caption) > 1 and caption[0] == "meme" else None
@@ -856,7 +877,7 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_botstats(update, context):
-    if update.effective_user.id not in ADMIN_IDS:
+    if not is_admin(update.effective_user.id):
         return
     media = ", ".join(f"{r['tag']}/{r['kind']}: {r['n']}" for r in db.media_counts()) or "none"
     pool = db.pool_counts(int(time.time()) - 3 * 86400)
@@ -881,6 +902,10 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action:
         context.user_data.pop("await_fb", None)
         await action(update, context)
+        return
+    if context.user_data.pop("await_bc", False) and is_admin(update.effective_user.id):
+        context.args = text.split()
+        await cmd_broadcast(update, context)
         return
     if context.user_data.pop("await_fb", False):
         u = update.effective_user
@@ -967,9 +992,38 @@ async def cmd_leaderboard(update, context):
     await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
 
+async def cmd_admin(update, context):
+    """/admin <code> claims admin rights (the code is printed in the Render log); /admin alone opens the panel."""
+    uid = update.effective_user.id
+    if context.args:
+        if context.args[0] == ADMIN_CODE:
+            db.add_admin(uid)
+            try:
+                await update.message.delete()
+            except Exception:
+                pass
+            await context.bot.set_my_commands(
+                [BotCommand("admin", "Admin panel"), BotCommand("broadcast", "Message all students"),
+                 BotCommand("botstats", "Users and pool stats")] + _public_commands(),
+                scope=BotCommandScopeChat(uid),
+            )
+            await context.bot.send_message(uid, "✅ You are now the admin. New users, feedback and errors will be sent to you.")
+        else:
+            await update.message.reply_text("Wrong code.")
+            return
+    elif not is_admin(uid):
+        await update.message.reply_text("This is for the admin only.")
+        return
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📢 Broadcast to all students", callback_data="adm:bc")],
+        [InlineKeyboardButton("📊 Stats", callback_data="adm:stats"), InlineKeyboardButton("🗄 Backup now", callback_data="adm:backup")],
+    ])
+    await context.bot.send_message(uid, f"🛠 <b>Admin panel</b>\nStudents connected: <b>{db.count_users()}</b>", parse_mode=ParseMode.HTML, reply_markup=kb)
+
+
 async def cmd_broadcast(update, context):
     """Admin only: /broadcast <message> sends to every connected student."""
-    if update.effective_user.id not in ADMIN_IDS:
+    if not is_admin(update.effective_user.id):
         return
     text = " ".join(context.args).strip()
     if not text:
@@ -988,10 +1042,10 @@ async def cmd_broadcast(update, context):
 
 async def backup_job(context: ContextTypes.DEFAULT_TYPE):
     """Daily: send the admin a copy of the users table (calendar links stay encrypted with SECRET_KEY)."""
-    if not ADMIN_IDS:
+    if not admin_ids():
         return
     data = json.dumps(db.export_users(), default=str, ensure_ascii=False, indent=1).encode()
-    for aid in ADMIN_IDS:
+    for aid in admin_ids():
         try:
             await context.bot.send_document(
                 aid, io.BytesIO(data), filename=f"backup-{datetime.utcnow():%Y-%m-%d}.json",
@@ -1018,6 +1072,23 @@ async def pool_job(context: ContextTypes.DEFAULT_TYPE):
         await punchlines.refill_once()
     except Exception:
         log.exception("pool refill failed")
+
+
+def is_linked(chat_id) -> bool:
+    u = db.get_user(chat_id)
+    return bool(u and u["token_enc"])
+
+
+async def cmd_cancel(update, context):
+    context.user_data.pop("await_bc", None)
+    context.user_data.pop("await_fb", None)
+    await update.message.reply_text("Cancelled.")
+
+
+def NS_update(q):
+    """Tiny stand-in so admin buttons can reuse command handlers."""
+    from types import SimpleNamespace
+    return SimpleNamespace(effective_user=q.from_user, message=q.message, effective_message=q.message, effective_chat=q.message.chat)
 
 
 # ---------- inline buttons ----------
@@ -1073,6 +1144,19 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await q.answer("Cancelled")
             await q.edit_message_text("Okay, you stay logged in ✅")
+    elif action == "adm":
+        if not is_admin(q.from_user.id):
+            await q.answer("Admin only", show_alert=True)
+            return
+        await q.answer()
+        if parts[1] == "bc":
+            context.user_data["await_bc"] = True
+            await q.message.reply_text("📢 Type the message to send to all students now (or /cancel).")
+        elif parts[1] == "stats":
+            await cmd_botstats(NS_update(q), context)
+        elif parts[1] == "backup":
+            await backup_job(context)
+            await q.message.reply_text("🗄 Backup sent.")
     elif action == "fb":
         context.user_data["await_fb"] = True
         await q.answer()
@@ -1147,7 +1231,22 @@ async def ping_job(context: ContextTypes.DEFAULT_TYPE):
         log.warning("self-ping failed")
 
 
+def _public_commands():
+    return [
+        BotCommand("start", "Start and show the buttons"),
+        BotCommand("today", "Due today"),
+        BotCommand("week", "Due this week"),
+        BotCommand("upcoming", "Upcoming deadlines"),
+        BotCommand("overdue", "Overdue tasks"),
+        BotCommand("stats", "My points and streak"),
+        BotCommand("leaderboard", "Friends leaderboard"),
+        BotCommand("settings", "Settings (ON/OFF switches)"),
+        BotCommand("help", "Help"),
+    ]
+
+
 async def post_init(app: Application):
+    log.warning("ADMIN CLAIM CODE (this run only): %s  ->  send  /admin %s  to your bot to become admin", ADMIN_CODE, ADMIN_CODE)
     await app.bot.set_my_commands([
         BotCommand("start", "Start and show the buttons"),
         BotCommand("today", "Due today"),
@@ -1173,7 +1272,7 @@ async def post_init(app: Application):
     if not WEBAPP_URL:
         log.info("WEBAPP_URL not set: Connect button disabled, /calendar still works")
         return
-    runner = web.AppRunner(webapp.create_app(BOT_TOKEN, lambda cid, url: link_calendar(app, cid, url), DEFAULT_SITE, share_url(), GROUP_URL))
+    runner = web.AppRunner(webapp.create_app(BOT_TOKEN, lambda cid, url: link_calendar(app, cid, url), DEFAULT_SITE, share_url(), GROUP_URL, is_linked))
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
     app.bot_data["web_runner"] = runner
@@ -1195,7 +1294,7 @@ def main():
         "upcoming": cmd_upcoming, "overdue": cmd_overdue, "reminders": cmd_reminders,
         "digest": cmd_digest, "quiet": cmd_quiet, "timezone": cmd_timezone,
         "mute": cmd_mute, "unmute": cmd_unmute, "settings": cmd_settings, "style": cmd_style,
-        "stats": cmd_stats, "fun": cmd_fun, "leaderboard": cmd_leaderboard, "broadcast": cmd_broadcast, "botstats": cmd_botstats, "addmeme": cmd_addmeme_help,
+        "admin": cmd_admin, "cancel": cmd_cancel, "stats": cmd_stats, "fun": cmd_fun, "leaderboard": cmd_leaderboard, "broadcast": cmd_broadcast, "botstats": cmd_botstats, "addmeme": cmd_addmeme_help,
     }
     for name, fn in handlers.items():
         app.add_handler(CommandHandler(name, fn))

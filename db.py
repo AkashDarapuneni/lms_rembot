@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS stats (
     points BIGINT DEFAULT 0, submitted BIGINT DEFAULT 0, early BIGINT DEFAULT 0,
     streak BIGINT DEFAULT 0, best_streak BIGINT DEFAULT 0, last_day VARCHAR(10) DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS admins (chat_id BIGINT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS media_pool (
     file_unique_id VARCHAR(100) PRIMARY KEY,
     file_id TEXT, kind VARCHAR(12), tag VARCHAR(8),
@@ -364,3 +365,10 @@ class DB:
     def export_users(self):
         """All user rows (the calendar link / token stays encrypted) for the daily admin backup."""
         return [dict(r) for r in self._exec("SELECT * FROM users").fetchall()]
+
+    # ---- admins claimed with the one-time code from the Render log ----
+    def add_admin(self, chat_id):
+        self._insert_ignore("admins", ["chat_id"], (chat_id,))
+
+    def admin_ids(self):
+        return {int(r["chat_id"]) for r in self._exec("SELECT chat_id FROM admins").fetchall()}
