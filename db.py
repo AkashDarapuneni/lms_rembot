@@ -372,3 +372,20 @@ class DB:
 
     def admin_ids(self):
         return {int(r["chat_id"]) for r in self._exec("SELECT chat_id FROM admins").fetchall()}
+
+    def admin_stats(self, now):
+        def q(sql, a=()):
+            return int(self._exec(sql, a).fetchone()["n"] or 0)
+        return {
+            "users": q("SELECT COUNT(*) AS n FROM users WHERE token_enc IS NOT NULL"),
+            "pending": q("SELECT COUNT(*) AS n FROM events WHERE done=0 AND due_ts>=?", (now,)),
+            "due_24h": q("SELECT COUNT(*) AS n FROM events WHERE done=0 AND due_ts>=? AND due_ts<?", (now, now + 86400)),
+            "reminders": q("SELECT COUNT(*) AS n FROM sent"),
+            "submitted": q("SELECT COALESCE(SUM(submitted),0) AS n FROM stats"),
+            "board": q("SELECT COUNT(*) AS n FROM users WHERE board=1"),
+        }
+
+    def recent_users(self, limit=10):
+        return self._exec(
+            f"SELECT chat_id, source, last_sync, lang, style FROM users WHERE token_enc IS NOT NULL ORDER BY last_sync DESC LIMIT {int(limit)}"
+        ).fetchall()

@@ -214,7 +214,7 @@ def reminder_text(e, tz: str, header: str, style: dict | None) -> str:
 # Buttons shown permanently under the chat box (3 per row)
 BTN_TODAY, BTN_WEEK, BTN_UPCOMING = "📅 Today", "📆 This week", "⏳ Upcoming"
 BTN_OVERDUE, BTN_SETTINGS, BTN_HELP = "⚠️ Overdue", "⚙️ Settings", "❓ Help"
-BTN_STATS, BTN_FUN, BTN_CONNECT = "🏆 My stats", "🎲 Fun", "🔗 Connect"
+BTN_STATS, BTN_FUN, BTN_CONNECT, BTN_LOGOUT = "🏆 My stats", "🎲 Fun", "🔗 Connect", "🚪 Logout"
 MENU_ROWS = [
     [BTN_TODAY, BTN_WEEK, BTN_UPCOMING],
     [BTN_OVERDUE, BTN_SETTINGS, BTN_HELP],
@@ -222,9 +222,14 @@ MENU_ROWS = [
 ]
 
 
-def main_keyboard() -> ReplyKeyboardMarkup:
+def main_keyboard(linked: bool | None = None, chat_id: int | None = None) -> ReplyKeyboardMarkup:
+    """Persistent buttons. Logged-in students see Logout in place of Connect."""
+    if linked is None:
+        linked = is_linked(chat_id) if chat_id else False
+    rows = [list(r) for r in MENU_ROWS]
+    rows[2][2] = BTN_LOGOUT if linked else BTN_CONNECT
     return ReplyKeyboardMarkup(
-        [[KeyboardButton(t) for t in row] for row in MENU_ROWS],
+        [[KeyboardButton(t) for t in row] for row in rows],
         resize_keyboard=True,
         is_persistent=True,
     )
@@ -408,7 +413,7 @@ async def send_list(bot, user, title, days=None, overdue=False):
     else:
         rows = db.pending_events(chat_id, since=now)[:15]
     if not rows:
-        await bot.send_message(chat_id, f"{title}\nNothing here. Enjoy the free time.", reply_markup=main_keyboard())
+        await bot.send_message(chat_id, f"{title}\nNothing here. Enjoy the free time.", reply_markup=main_keyboard(True))
         return
     lines = [f"<b>{esc(title)}</b>", ""]
     for i, e in enumerate(rows, 1):
@@ -454,7 +459,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = db.get_user(chat_id)
     if user and user["token_enc"]:
         kb = extras_markup(logout=True)
-        await update.message.reply_text("Menu buttons are ready 👇", reply_markup=main_keyboard())
+        await update.message.reply_text("Menu buttons are ready 👇", reply_markup=main_keyboard(True))
         await update.message.reply_text(
             "✅ <b>You are already logged in.</b>\n\nDo you want to log out?",
             parse_mode=ParseMode.HTML, reply_markup=kb,
@@ -462,7 +467,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     name = esc(update.effective_user.first_name or "friend")
     hello = f"👋 <b>Hello {name}!</b> Welcome to the LMS Reminder Bot 🎓\n\nI remind you before every deadline, with some Telugu mass dialogues 🔥"
-    await update.message.reply_text("🎬", reply_markup=main_keyboard())
+    await update.message.reply_text("🎬", reply_markup=main_keyboard(False))
     if not WEBAPP_URL:
         await update.message.reply_text(
             hello + f"\n\nOpen https://{DEFAULT_SITE}/calendar/export.php, choose All events, click Get calendar URL, "
@@ -484,12 +489,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        HELP, parse_mode=ParseMode.HTML, disable_web_page_preview=True, reply_markup=main_keyboard()
+        HELP, parse_mode=ParseMode.HTML, disable_web_page_preview=True, reply_markup=main_keyboard(chat_id=update.effective_chat.id)
     )
 
 
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Buttons are on. Use them under the chat box.", reply_markup=main_keyboard())
+    await update.message.reply_text("Buttons are on. Use them under the chat box.", reply_markup=main_keyboard(chat_id=update.effective_chat.id))
 
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -530,7 +535,7 @@ async def link_calendar(app: Application, chat_id: int, url: str):
         f"🎉 <b>You're in! Welcome aboard!</b> 🥳\n\n"
         f"Connected to {DEFAULT_SITE}. I found <b>{count}</b> pending task(s) and reminders are ON.\n\n"
         "Tap <b>⚙️ Settings</b> to try a preview, and press <b>Submitted</b> on a reminder when you finish a task.",
-        FX_PARTY, parse_mode=ParseMode.HTML, reply_markup=main_keyboard(),
+        FX_PARTY, parse_mode=ParseMode.HTML, reply_markup=main_keyboard(True),
     )
     if extras_markup():
         await app.bot.send_message(chat_id, "📣 Invite your friends so they never miss a deadline either:", reply_markup=extras_markup())
@@ -552,7 +557,7 @@ async def _finish_login(update, context, site, token, source="api"):
     await send_fx(
         context.bot, chat_id,
         f"🎉 <b>You're in, {esc(who)}!</b> 🥳\n\nI found <b>{count}</b> pending task(s). Reminders: {esc(user['offsets'])}.{esc(note)}",
-        FX_PARTY, parse_mode=ParseMode.HTML, reply_markup=main_keyboard(),
+        FX_PARTY, parse_mode=ParseMode.HTML, reply_markup=main_keyboard(True),
     )
     if extras_markup():
         await context.bot.send_message(chat_id, "📣 Invite your friends so they never miss a deadline either:", reply_markup=extras_markup())
@@ -890,7 +895,7 @@ async def cmd_botstats(update, context):
 MENU_ACTIONS = {
     BTN_TODAY: cmd_today, BTN_WEEK: cmd_week, BTN_UPCOMING: cmd_upcoming,
     BTN_OVERDUE: cmd_overdue, BTN_SETTINGS: cmd_settings, BTN_HELP: cmd_help,
-    BTN_STATS: cmd_stats, BTN_FUN: cmd_fun, BTN_CONNECT: cmd_connect,
+    BTN_STATS: cmd_stats, BTN_FUN: cmd_fun, BTN_CONNECT: cmd_connect, BTN_LOGOUT: cmd_logout,
 }
 _chat_times: dict[int, list[float]] = {}
 
@@ -1012,11 +1017,15 @@ async def cmd_admin(update, context):
             await update.message.reply_text("Wrong code.")
             return
     elif not is_admin(uid):
-        await update.message.reply_text("This is for the admin only.")
+        await update.message.reply_text(
+            "🔒 This is for the admin only.\n\nAre you the owner? Open your Render service > Logs, find the line "
+            "'ADMIN CLAIM CODE', then send me:  /admin <that code>\n(or add your Telegram ID as ADMIN_IDS in Render > Environment).")
         return
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📢 Broadcast to all students", callback_data="adm:bc")],
-        [InlineKeyboardButton("📊 Stats", callback_data="adm:stats"), InlineKeyboardButton("🗄 Backup now", callback_data="adm:backup")],
+        [InlineKeyboardButton("📊 Stats", callback_data="adm:stats"), InlineKeyboardButton("👥 Recent users", callback_data="adm:users")],
+        [InlineKeyboardButton("🔄 Sync everyone now", callback_data="adm:sync"), InlineKeyboardButton("🗄 Backup now", callback_data="adm:backup")],
+        [InlineKeyboardButton("🤖 Test Gemini", callback_data="adm:gemini"), InlineKeyboardButton("🖼 Memes saved", callback_data="adm:memes")],
     ])
     await context.bot.send_message(uid, f"🛠 <b>Admin panel</b>\nStudents connected: <b>{db.count_users()}</b>", parse_mode=ParseMode.HTML, reply_markup=kb)
 
@@ -1077,6 +1086,20 @@ async def pool_job(context: ContextTypes.DEFAULT_TYPE):
 def is_linked(chat_id) -> bool:
     u = db.get_user(chat_id)
     return bool(u and u["token_enc"])
+
+
+async def cmd_msg(update, context):
+    """Admin only: /msg <telegram id> <text> sends a private message to one student."""
+    if not is_admin(update.effective_user.id):
+        return
+    if len(context.args) < 2 or not context.args[0].isdigit():
+        await update.message.reply_text("Usage: /msg 123456789 your text")
+        return
+    try:
+        await context.bot.send_message(int(context.args[0]), "💬 Message from admin:\n\n" + " ".join(context.args[1:]))
+        await update.message.reply_text("Sent ✅")
+    except Exception:
+        await update.message.reply_text("Could not send (user blocked the bot or ID is wrong).")
 
 
 async def cmd_cancel(update, context):
@@ -1140,7 +1163,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.answer("😢 Logged out. We'll miss you!", show_alert=True)
             await q.edit_message_text("😢 Logged out. All your data was deleted.")
             await send_fx(context.bot, chat_id, "😭 <b>Goodbye...</b>\n\nCome back any time: send /start and tap Connect.",
-                          FX_SAD, parse_mode=ParseMode.HTML)
+                          FX_SAD, parse_mode=ParseMode.HTML, reply_markup=main_keyboard(False))
         else:
             await q.answer("Cancelled")
             await q.edit_message_text("Okay, you stay logged in ✅")
@@ -1153,7 +1176,31 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["await_bc"] = True
             await q.message.reply_text("📢 Type the message to send to all students now (or /cancel).")
         elif parts[1] == "stats":
-            await cmd_botstats(NS_update(q), context)
+            st = db.admin_stats(int(time.time()))
+            pool = db.pool_counts(int(time.time()) - 3 * 86400)
+            await q.message.reply_text(
+                f"📊 <b>Stats</b>\n👥 Students: {st['users']}\n📌 Pending tasks: {st['pending']} (due in 24h: {st['due_24h']})\n"
+                f"🔔 Reminders sent: {st['reminders']}\n✅ Submitted via bot: {st['submitted']}\n🏅 On leaderboard: {st['board']}\n"
+                f"💬 Dialogues free/total: " + ", ".join(f"{k} {v[0]}/{v[1]}" for k, v in sorted(pool.items())),
+                parse_mode=ParseMode.HTML)
+        elif parts[1] == "users":
+            rows = db.recent_users(10)
+            now = int(time.time())
+            lines = [f"• <code>{r['chat_id']}</code> synced {fmt_delta(now - int(r['last_sync'] or 0)) if r['last_sync'] else 'never'} ago ({r['source']}, {r['lang']})" for r in rows]
+            await q.message.reply_text("👥 <b>Recent users</b>\n" + ("\n".join(lines) or "none yet") + "\n\nMessage one: /msg ID your text", parse_mode=ParseMode.HTML)
+        elif parts[1] == "sync":
+            await q.message.reply_text("🔄 Syncing everyone...")
+            await sync_job(context)
+            await q.message.reply_text("✅ Sync finished.")
+        elif parts[1] == "gemini":
+            if not gemini.enabled():
+                await q.message.reply_text("🤖 Gemini is OFF: GEMINI_API_KEY is not set in Render.")
+            else:
+                ans = await gemini.chat("Say hello in one short Telugu mass-hero style line.", [], "No deadlines.", DEFAULT_SITE, "Asia/Kolkata", "now")
+                await q.message.reply_text("🤖 Gemini works:\n" + ans if ans else "🤖 Gemini is ON but the call failed. Check the key, model name or quota in the Render logs.")
+        elif parts[1] == "memes":
+            media = ", ".join(f"{r['tag']}/{r['kind']}: {r['n']}" for r in db.media_counts()) or "none yet (send me a GIF/sticker with caption: meme any)"
+            await q.message.reply_text("🖼 Memes saved: " + media)
         elif parts[1] == "backup":
             await backup_job(context)
             await q.message.reply_text("🗄 Backup sent.")
@@ -1294,7 +1341,7 @@ def main():
         "upcoming": cmd_upcoming, "overdue": cmd_overdue, "reminders": cmd_reminders,
         "digest": cmd_digest, "quiet": cmd_quiet, "timezone": cmd_timezone,
         "mute": cmd_mute, "unmute": cmd_unmute, "settings": cmd_settings, "style": cmd_style,
-        "admin": cmd_admin, "cancel": cmd_cancel, "stats": cmd_stats, "fun": cmd_fun, "leaderboard": cmd_leaderboard, "broadcast": cmd_broadcast, "botstats": cmd_botstats, "addmeme": cmd_addmeme_help,
+        "admin": cmd_admin, "msg": cmd_msg, "cancel": cmd_cancel, "stats": cmd_stats, "fun": cmd_fun, "leaderboard": cmd_leaderboard, "broadcast": cmd_broadcast, "botstats": cmd_botstats, "addmeme": cmd_addmeme_help,
     }
     for name, fn in handlers.items():
         app.add_handler(CommandHandler(name, fn))
