@@ -48,3 +48,10 @@ Open your bot in Telegram, send `/start`, tap **Connect**, log in. Then check `/
 ## Memes, GIFs, stickers and admin tools
 Add `ADMIN_IDS` (your numeric Telegram ID, from @userinfobot) in Render > Environment. Then send the bot any GIF, sticker or photo with the caption `meme any` (or `meme 1h`, `meme 10m` ...) and it will use it in reminders and in the 🎲 Fun button. Without any saved memes the bot sends Telegram's animated dice. `/botstats` shows users, dialogue pool size and saved memes.
 Gemini answers use the student's pending task names as context; set `GEMINI_SHARE_DEADLINES=0` to disable that.
+
+## Weekly summary, leaderboard, broadcast, backups
+- Sunday 6 PM (student's time zone): weekly summary (students can switch it off in Settings).
+- `/leaderboard`: top 10 friends who turned on "Show me on leaderboard" (opt-in, only first name and points are shown).
+- `/broadcast your message` (admin only): sends to all connected students.
+- Daily 03:00 IST: backup of the users table sent to the admin(s) as a JSON file (links stay encrypted with SECRET_KEY). Needs `ADMIN_IDS`.
+- Errors: the admin gets a Telegram alert (max one per 10 minutes).

@@ -1,11 +1,13 @@
 """Moodle assignment reminder bot for Telegram."""
 import asyncio
 import html
+import io
+import json
 import logging
 import os
 import random
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, time as dtime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from cryptography.fernet import Fernet
@@ -76,12 +78,15 @@ HELP = (
     "<b>Buttons under the chat box</b>\n"
     "📅 Today / 📆 This week / ⏳ Upcoming / ⚠️ Overdue: your task lists\n"
     "⚙️ Settings: tap the ON/OFF switches\n"
-    "🏆 My stats: your points, level and streak\n"
+    "🏆 My stats: your points, level and streak (/leaderboard shows friends)\n"
     "🎲 Fun: a random meme, GIF or dialogue\n\n"
     "<b>What each setting means</b>\n"
     "🎬 <b>Mass mode</b>: a Telugu hero dialogue comes with every reminder\n"
     "🖼 <b>Memes and GIFs</b>: a funny GIF, sticker or animation comes with reminders\n"
     "🤖 <b>AI dialogues</b>: Gemini AI writes extra new dialogues so you rarely see the same one\n"
+    "📊 <b>Weekly summary</b>: every Sunday 6 PM, your week ahead\n"
+    "🏅 <b>Leaderboard</b>: show your points to friends who joined\n"
+    "🌐 <b>Language</b>: switch buttons and headings to Telugu style\n"
     "🌅 <b>Daily digest</b>: one summary message every morning (08:00)\n"
     "🌙 <b>Quiet hours</b>: no reminders at night (11 PM to 7 AM), except in the last hour\n"
     "🔔 <b>Reminder times</b>: by default 24h, 6h, 2h, 1h, 50m and 10m before each deadline\n\n"
@@ -127,6 +132,18 @@ async def send_fx(bot, chat_id, text, effect=None, **kw):
         except Exception:
             pass
     return await bot.send_message(chat_id, text, **kw)
+
+
+TR = {
+    "en": {"hdr": "Reminder ({o} before): ", "snooze_over": "Snooze over: ", "done": "Submitted", "snz": "Snooze 1h", "tom": "Tomorrow",
+           "mute": "Mute course", "open": "Open in Moodle", "task_done": "Task done!", "week": "Your week ahead"},
+    "te": {"hdr": "Gurthu chesko ({o} mundu): ", "snooze_over": "Snooze aipoyindi: ", "done": "Submit chesa", "snz": "1h tarvata", "tom": "Repu",
+           "mute": "Course mute", "open": "Moodle lo chudu", "task_done": "Pani aipoyindi!", "week": "Ee vaaram plan"},
+}
+
+
+def tr(lang, key, **kw):
+    return TR.get(lang or "en", TR["en"])[key].format(**kw)
 
 
 def share_url() -> str:
@@ -199,18 +216,18 @@ def main_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-def event_keyboard(e) -> InlineKeyboardMarkup:
+def event_keyboard(e, lang="en") -> InlineKeyboardMarkup:
     eid = e["event_id"]
     rows = [
         [
-            InlineKeyboardButton("Submitted", callback_data=f"done:{eid}"),
-            InlineKeyboardButton("Snooze 1h", callback_data=f"snz:{eid}:60"),
-            InlineKeyboardButton("Tomorrow", callback_data=f"snz:{eid}:1440"),
+            InlineKeyboardButton("✅ " + tr(lang, "done"), callback_data=f"done:{eid}"),
+            InlineKeyboardButton("😴 " + tr(lang, "snz"), callback_data=f"snz:{eid}:60"),
+            InlineKeyboardButton("📅 " + tr(lang, "tom"), callback_data=f"snz:{eid}:1440"),
         ],
-        [InlineKeyboardButton("Mute course", callback_data=f"mute:{e['course_id']}")],
+        [InlineKeyboardButton("🔕 " + tr(lang, "mute"), callback_data=f"mute:{e['course_id']}")],
     ]
     if e["url"]:
-        rows.insert(0, [InlineKeyboardButton("Open in Moodle", url=e["url"])])
+        rows.insert(0, [InlineKeyboardButton("🔗 " + tr(lang, "open"), url=e["url"])])
     return InlineKeyboardMarkup(rows)
 
 
@@ -293,7 +310,7 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
                 if e["due_ts"] > now and not quiet:
                     left = e["due_ts"] - now
                     style = await punchlines.build(left, left, bool(user["ai_lines"])) if user["style"] else None
-                    await send_reminder(context, chat_id, e, tz, "Snooze over: ", style, memes=bool(user["memes"]))
+                    await send_reminder(context, chat_id, e, tz, tr(user["lang"], "snooze_over"), style, memes=bool(user["memes"]), lang=user["lang"])
                 continue
             to_send, passed = due_reminder_offsets(
                 now, e["due_ts"], offsets, db.sent_offsets(chat_id, e["event_id"])
@@ -305,12 +322,12 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
                 continue  # will fire once quiet hours end
             db.mark_sent(chat_id, e["event_id"], passed)
             style = await punchlines.build(to_send, e["due_ts"] - now, bool(user["ai_lines"])) if user["style"] else None
-            await send_reminder(context, chat_id, e, tz, f"Reminder ({fmt_offset(to_send)} before): ", style, memes=bool(user["memes"]))
+            await send_reminder(context, chat_id, e, tz, tr(user["lang"], "hdr", o=fmt_offset(to_send)), style, memes=bool(user["memes"]), lang=user["lang"])
 
 
-async def send_reminder(context, chat_id, e, tz, header, style=None, keyboard=True, memes=False):
+async def send_reminder(context, chat_id, e, tz, header, style=None, keyboard=True, memes=False, lang="en"):
     text = reminder_text(e, tz, header, style)
-    markup = event_keyboard(e) if keyboard else None
+    markup = event_keyboard(e, lang) if keyboard else None
     try:
         if style and style.get("gif"):
             try:
@@ -758,6 +775,9 @@ def settings_panel(user):
         [InlineKeyboardButton(f"🤖 AI dialogues: {_onoff(user['ai_lines'])}", callback_data="set:ai_lines")],
         [InlineKeyboardButton(f"🌅 Daily digest: {_onoff(user['digest_time'])}", callback_data="set:digest")],
         [InlineKeyboardButton(f"🌙 Quiet hours: {_onoff(quiet)}", callback_data="set:quiet")],
+        [InlineKeyboardButton(f"📊 Weekly summary: {_onoff(user['weekly'])}", callback_data="set:weekly")],
+        [InlineKeyboardButton(f"🏅 Show me on leaderboard: {_onoff(user['board'])}", callback_data="set:board")],
+        [InlineKeyboardButton(f"🌐 Language: {'తెలుగు style (Telugu)' if user['lang'] == 'te' else 'English'}", callback_data="set:lang")],
         [
             InlineKeyboardButton("🔔 Reminder times", callback_data="set:times"),
             InlineKeyboardButton("🧪 Test", callback_data="set:test"),
@@ -901,6 +921,98 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(answer[:3500])
 
 
+async def weekly_job(context: ContextTypes.DEFAULT_TYPE):
+    """Sunday 18:00 (student's time zone): a summary of the week ahead."""
+    now = int(time.time())
+    for user in db.all_users():
+        if not user["weekly"]:
+            continue
+        try:
+            local = datetime.fromtimestamp(now, ZoneInfo(user["tz"]))
+        except ZoneInfoNotFoundError:
+            continue
+        today = local.strftime("%Y-%m-%d")
+        if local.weekday() != 6 or local.strftime("%H:%M") != "18:00" or user["last_weekly"] == today:
+            continue
+        db.set_field(user["chat_id"], "last_weekly", today)
+        cid = user["chat_id"]
+        evs = db.pending_events(cid, since=now, until=now + 7 * 86400)
+        late = db.pending_events(cid, until=now, since=now - 30 * 86400)
+        st = db.get_stats(cid)
+        lines = [f"📊 <b>{tr(user['lang'], 'week')}</b>", ""]
+        if evs:
+            lines.append(f"📌 <b>{len(evs)}</b> deadline(s) in the next 7 days:")
+            lines += [f"• {esc(e['name'])} - {fmt_due(e['due_ts'], user['tz'])}" for e in evs[:10]]
+        else:
+            lines.append("🎉 Nothing due this week. Enjoy!")
+        if late:
+            lines.append(f"\n⚠️ {len(late)} overdue task(s)")
+        lines.append(f"\n{level_for(st['points'])}  •  ⭐ {st['points']} pts  •  🔥 {st['streak']}-day streak")
+        try:
+            await context.bot.send_message(cid, "\n".join(lines), parse_mode=ParseMode.HTML)
+        except Exception:
+            log.warning("weekly summary failed for %s", cid)
+
+
+async def cmd_leaderboard(update, context):
+    rows = db.leaderboard(10)
+    if not rows:
+        await update.effective_message.reply_text(
+            "🏅 The leaderboard is empty. Turn on <b>Show me on leaderboard</b> in ⚙️ Settings to join!", parse_mode=ParseMode.HTML)
+        return
+    medals = ["🥇", "🥈", "🥉"]
+    lines = ["🏅 <b>Leaderboard</b> (friends who joined)", ""]
+    for i, r in enumerate(rows):
+        lines.append(f"{medals[i] if i < 3 else str(i + 1) + '.'} {esc(r['name'] or 'Student')} - ⭐ {r['points']} pts • 🔥 {r['streak']}")
+    await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+async def cmd_broadcast(update, context):
+    """Admin only: /broadcast <message> sends to every connected student."""
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+    text = " ".join(context.args).strip()
+    if not text:
+        await update.message.reply_text("Usage: /broadcast your message")
+        return
+    sent = failed = 0
+    for u in db.all_users():
+        try:
+            await context.bot.send_message(u["chat_id"], f"📢 {text}")
+            sent += 1
+        except Exception:
+            failed += 1
+        await asyncio.sleep(0.05)  # stay under Telegram's rate limit
+    await update.message.reply_text(f"Broadcast done. Sent: {sent}, failed (blocked the bot): {failed}")
+
+
+async def backup_job(context: ContextTypes.DEFAULT_TYPE):
+    """Daily: send the admin a copy of the users table (calendar links stay encrypted with SECRET_KEY)."""
+    if not ADMIN_IDS:
+        return
+    data = json.dumps(db.export_users(), default=str, ensure_ascii=False, indent=1).encode()
+    for aid in ADMIN_IDS:
+        try:
+            await context.bot.send_document(
+                aid, io.BytesIO(data), filename=f"backup-{datetime.utcnow():%Y-%m-%d}.json",
+                caption="🗄 Daily backup of users (keep SECRET_KEY safe, it is needed to read it).",
+            )
+        except Exception:
+            log.warning("backup send failed")
+
+
+_last_alert = 0.0
+
+
+async def on_error(update, context):
+    """Log every error and tell the admin (at most one alert per 10 minutes)."""
+    global _last_alert
+    log.error("Unhandled error", exc_info=context.error)
+    if time.time() - _last_alert > 600:
+        _last_alert = time.time()
+        await notify_admins(context.bot, f"⚠️ Bot error: {type(context.error).__name__}: {str(context.error)[:300]}")
+
+
 async def pool_job(context: ContextTypes.DEFAULT_TYPE):
     try:
         await punchlines.refill_once()
@@ -917,7 +1029,8 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "done":
         ev = db.get_event(chat_id, int(parts[1]))
         db.mark_done(chat_id, int(parts[1]))
-        tz = (db.get_user(chat_id) or {"tz": "Asia/Kolkata"})["tz"]
+        cur = db.get_user(chat_id)
+        tz, lang = (cur["tz"], cur["lang"]) if cur else ("Asia/Kolkata", "en")
         try:
             zone = ZoneInfo(tz)
         except ZoneInfoNotFoundError:
@@ -935,7 +1048,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_reply_markup(None)
         await send_fx(
             context.bot, chat_id,
-            f"🎉 <b>Task done!</b> 🥳\n{level_for(st['points'])}  •  ⭐ {st['points']} pts  •  🔥 {st['streak']}-day streak",
+            f"🎉 <b>{tr(lang, 'task_done')}</b> 🥳\n{level_for(st['points'])}  •  ⭐ {st['points']} pts  •  🔥 {st['streak']}-day streak",
             FX_PARTY, parse_mode=ParseMode.HTML,
         )
     elif action == "snz":
@@ -975,7 +1088,16 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.answer("Not connected")
             return
         key = parts[1]
-        if key in ("style", "memes", "ai_lines"):
+        if key in ("weekly",):
+            db.set_field(chat_id, key, 0 if user[key] else 1)
+        elif key == "board":
+            on = 0 if user["board"] else 1
+            db.set_field(chat_id, "board", on)
+            if on:
+                db.set_field(chat_id, "name", (q.from_user.first_name or "Student")[:40])
+        elif key == "lang":
+            db.set_field(chat_id, "lang", "en" if user["lang"] == "te" else "te")
+        elif key in ("style", "memes", "ai_lines"):
             db.set_field(chat_id, key, 0 if user[key] else 1)
         elif key == "digest":
             db.set_field(chat_id, "digest_time", None if user["digest_time"] else "08:00")
@@ -1035,6 +1157,7 @@ async def post_init(app: Application):
         BotCommand("reminders", "Change reminder times"),
         BotCommand("stats", "My points and streak"),
         BotCommand("fun", "Random meme or GIF"),
+        BotCommand("leaderboard", "Friends leaderboard"),
         BotCommand("test", "Preview a reminder"),
         BotCommand("settings", "Settings (ON/OFF switches)"),
         BotCommand("menu", "Show the buttons again"),
@@ -1072,7 +1195,7 @@ def main():
         "upcoming": cmd_upcoming, "overdue": cmd_overdue, "reminders": cmd_reminders,
         "digest": cmd_digest, "quiet": cmd_quiet, "timezone": cmd_timezone,
         "mute": cmd_mute, "unmute": cmd_unmute, "settings": cmd_settings, "style": cmd_style,
-        "stats": cmd_stats, "fun": cmd_fun, "botstats": cmd_botstats, "addmeme": cmd_addmeme_help,
+        "stats": cmd_stats, "fun": cmd_fun, "leaderboard": cmd_leaderboard, "broadcast": cmd_broadcast, "botstats": cmd_botstats, "addmeme": cmd_addmeme_help,
     }
     for name, fn in handlers.items():
         app.add_handler(CommandHandler(name, fn))
@@ -1084,6 +1207,9 @@ def main():
     app.job_queue.run_repeating(reminder_job, interval=60, first=45)
     app.job_queue.run_repeating(digest_job, interval=60, first=50)
     app.job_queue.run_repeating(pool_job, interval=60, first=20)
+    app.job_queue.run_repeating(weekly_job, interval=60, first=55)
+    app.job_queue.run_daily(backup_job, time=dtime(21, 30))  # 03:00 IST
+    app.add_error_handler(on_error)
     if os.getenv("RENDER") and WEBAPP_URL:
         app.job_queue.run_repeating(ping_job, interval=600, first=120)
     log.info("Bot started")

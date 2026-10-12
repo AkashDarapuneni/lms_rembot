@@ -64,6 +64,11 @@ NEW_USER_COLUMNS = [
     ("style", "INTEGER DEFAULT 1"),  # 1 = Telugu punchlines in reminders
     ("memes", "INTEGER DEFAULT 1"),  # 1 = send memes / GIFs / stickers with reminders
     ("ai_lines", "INTEGER DEFAULT 1"),  # 1 = also use dialogue lines written by Gemini
+    ("weekly", "INTEGER DEFAULT 1"),  # 1 = Sunday weekly summary
+    ("last_weekly", "VARCHAR(10)"),
+    ("lang", "VARCHAR(2) DEFAULT 'en'"),  # 'en' or 'te' for the plain parts of messages
+    ("board", "INTEGER DEFAULT 0"),  # 1 = shows up on the friends leaderboard
+    ("name", "VARCHAR(60)"),  # display name used only on the leaderboard
 ]
 
 
@@ -184,7 +189,7 @@ class DB:
         )
 
     def set_field(self, chat_id, field, value):
-        assert field in {"tz", "offsets", "digest_time", "last_digest", "quiet_start", "quiet_end", "last_sync", "style", "memes", "ai_lines"}
+        assert field in {"tz", "offsets", "digest_time", "last_digest", "quiet_start", "quiet_end", "last_sync", "style", "memes", "ai_lines", "weekly", "last_weekly", "lang", "board", "name"}
         self._exec(f"UPDATE users SET {field}=? WHERE chat_id=?", (value, chat_id))
 
     def delete_user(self, chat_id):
@@ -347,3 +352,15 @@ class DB:
 
     def media_counts(self):
         return self._exec("SELECT tag, kind, COUNT(*) AS n FROM media_pool GROUP BY tag, kind").fetchall()
+
+    # ---- leaderboard, backup ----
+    def leaderboard(self, limit=10):
+        return self._exec(
+            "SELECT u.name AS name, s.points AS points, s.streak AS streak FROM users u "
+            "JOIN stats s ON s.chat_id=u.chat_id WHERE u.board=1 ORDER BY s.points DESC "
+            f"LIMIT {int(limit)}"
+        ).fetchall()
+
+    def export_users(self):
+        """All user rows (the calendar link / token stays encrypted) for the daily admin backup."""
+        return [dict(r) for r in self._exec("SELECT * FROM users").fetchall()]
