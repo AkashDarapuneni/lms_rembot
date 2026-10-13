@@ -54,6 +54,8 @@ from utils import (
 
 load_dotenv()
 logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO)
+for _noisy in ("httpx", "httpcore"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)  # their INFO lines print bot tokens and calendar links
 log = logging.getLogger("moodlebot")
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -64,7 +66,9 @@ DEFAULT_SITE = os.getenv("DEFAULT_SITE", "lms.kluniversity.in")
 ALLOW_ANY_SITE = os.getenv("ALLOW_ANY_SITE", "0") == "1"
 WEBAPP_URL = (os.getenv("WEBAPP_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/")  # public HTTPS URL of this server
 PORT = int(os.getenv("PORT", "8080"))
-ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").replace(" ", "").split(",") if x.isdigit()}
+_admin_items = [x.strip().lstrip("@") for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
+ADMIN_IDS = {int(x) for x in _admin_items if x.isdigit()}
+ADMIN_USERNAMES = {x.lower() for x in _admin_items if not x.isdigit()}  # a Telegram @username also works
 GROUP_URL = os.getenv("GROUP_INVITE_URL", "").strip()  # invite link of your students' Telegram group
 BOT_USERNAME = os.getenv("BOT_USERNAME", "").lstrip("@")
 SHARE_DEADLINES = os.getenv("GEMINI_SHARE_DEADLINES", "1") != "0"
@@ -79,8 +83,16 @@ def admin_ids() -> set:
         return set(ADMIN_IDS)
 
 
-def is_admin(uid) -> bool:
-    return uid in admin_ids()
+def is_admin(user) -> bool:
+    """`user` is a Telegram user object or a numeric id. A listed @username is turned into an id on first use."""
+    uid = getattr(user, "id", user)
+    if uid in admin_ids():
+        return True
+    name = (getattr(user, "username", None) or "").lower()
+    if name and name in ADMIN_USERNAMES:
+        db.add_admin(uid)
+        return True
+    return False
 
 def esc(text) -> str:
     """Escape for Telegram HTML (only & < > matter; quotes and apostrophes are fine as they are)."""
@@ -861,7 +873,7 @@ async def cmd_addmeme_help(update, context):
 async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin teaches the bot a meme/GIF/sticker: send it with caption 'meme <stage|any>'."""
     m = update.message
-    if not is_admin(update.effective_user.id):
+    if not is_admin(update.effective_user):
         return
     caption = (m.caption or "").lower().split()
     tag = caption[1] if len(caption) > 1 and caption[0] == "meme" else None
@@ -882,7 +894,7 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_botstats(update, context):
-    if not is_admin(update.effective_user.id):
+    if not is_admin(update.effective_user):
         return
     media = ", ".join(f"{r['tag']}/{r['kind']}: {r['n']}" for r in db.media_counts()) or "none"
     pool = db.pool_counts(int(time.time()) - 3 * 86400)
@@ -908,7 +920,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("await_fb", None)
         await action(update, context)
         return
-    if context.user_data.pop("await_bc", False) and is_admin(update.effective_user.id):
+    if context.user_data.pop("await_bc", False) and is_admin(update.effective_user):
         context.args = text.split()
         await cmd_broadcast(update, context)
         return
@@ -1019,7 +1031,7 @@ async def cmd_admin(update, context):
     elif not is_admin(uid):
         await update.message.reply_text(
             "🔒 This is for the admin only.\n\nAre you the owner? Open your Render service > Logs, find the line "
-            "'ADMIN CLAIM CODE', then send me:  /admin <that code>\n(or add your Telegram ID as ADMIN_IDS in Render > Environment).")
+            "'ADMIN CLAIM CODE', then send me:  /admin <that code>\n(or send /myid and put that number in ADMIN_IDS in Render > Environment).")
         return
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📢 Broadcast to all students", callback_data="adm:bc")],
@@ -1032,7 +1044,7 @@ async def cmd_admin(update, context):
 
 async def cmd_broadcast(update, context):
     """Admin only: /broadcast <message> sends to every connected student."""
-    if not is_admin(update.effective_user.id):
+    if not is_admin(update.effective_user):
         return
     text = " ".join(context.args).strip()
     if not text:
@@ -1090,7 +1102,7 @@ def is_linked(chat_id) -> bool:
 
 async def cmd_msg(update, context):
     """Admin only: /msg <telegram id> <text> sends a private message to one student."""
-    if not is_admin(update.effective_user.id):
+    if not is_admin(update.effective_user):
         return
     if len(context.args) < 2 or not context.args[0].isdigit():
         await update.message.reply_text("Usage: /msg 123456789 your text")
@@ -1100,6 +1112,13 @@ async def cmd_msg(update, context):
         await update.message.reply_text("Sent ✅")
     except Exception:
         await update.message.reply_text("Could not send (user blocked the bot or ID is wrong).")
+
+
+async def cmd_myid(update, context):
+    u = update.effective_user
+    await update.message.reply_text(
+        f"🆔 Your Telegram ID: <code>{u.id}</code>\nUsername: @{u.username or '(none)'}\n\n"
+        "Admin? Put this number in Render > Environment > ADMIN_IDS.", parse_mode=ParseMode.HTML)
 
 
 async def cmd_cancel(update, context):
@@ -1168,7 +1187,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.answer("Cancelled")
             await q.edit_message_text("Okay, you stay logged in ✅")
     elif action == "adm":
-        if not is_admin(q.from_user.id):
+        if not is_admin(q.from_user):
             await q.answer("Admin only", show_alert=True)
             return
         await q.answer()
@@ -1341,7 +1360,7 @@ def main():
         "upcoming": cmd_upcoming, "overdue": cmd_overdue, "reminders": cmd_reminders,
         "digest": cmd_digest, "quiet": cmd_quiet, "timezone": cmd_timezone,
         "mute": cmd_mute, "unmute": cmd_unmute, "settings": cmd_settings, "style": cmd_style,
-        "admin": cmd_admin, "msg": cmd_msg, "cancel": cmd_cancel, "stats": cmd_stats, "fun": cmd_fun, "leaderboard": cmd_leaderboard, "broadcast": cmd_broadcast, "botstats": cmd_botstats, "addmeme": cmd_addmeme_help,
+        "admin": cmd_admin, "myid": cmd_myid, "msg": cmd_msg, "cancel": cmd_cancel, "stats": cmd_stats, "fun": cmd_fun, "leaderboard": cmd_leaderboard, "broadcast": cmd_broadcast, "botstats": cmd_botstats, "addmeme": cmd_addmeme_help,
     }
     for name, fn in handlers.items():
         app.add_handler(CommandHandler(name, fn))
