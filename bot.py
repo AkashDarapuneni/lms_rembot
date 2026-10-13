@@ -1029,9 +1029,12 @@ async def cmd_admin(update, context):
             await update.message.reply_text("Wrong code.")
             return
     elif not is_admin(uid):
+        u = update.effective_user
         await update.message.reply_text(
-            "🔒 This is for the admin only.\n\nAre you the owner? Open your Render service > Logs, find the line "
-            "'ADMIN CLAIM CODE', then send me:  /admin <that code>\n(or send /myid and put that number in ADMIN_IDS in Render > Environment).")
+            f"🔒 This is for the admin only.\n\nI see you as: @{u.username or '(no username)'}  •  ID {u.id}\n"
+            f"ADMIN_IDS is set in Render: {'yes' if (ADMIN_IDS or ADMIN_USERNAMES) else 'NO (empty, or the bot has not restarted yet)'}\n\n"
+            f"To become admin: in Render > Environment set ADMIN_IDS = {u.id}  (just this number), save, wait for the redeploy, then send /admin again."
+        )
         return
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📢 Broadcast to all students", callback_data="adm:bc")],
