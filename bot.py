@@ -25,7 +25,7 @@ from telegram import (
     WebAppInfo,
 )
 from telegram.constants import ParseMode
-from telegram.error import BadRequest
+from telegram.error import BadRequest, Conflict
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -1085,6 +1085,10 @@ _last_alert = 0.0
 async def on_error(update, context):
     """Log every error and tell the admin (at most one alert per 10 minutes)."""
     global _last_alert
+    if isinstance(context.error, Conflict):
+        # Two copies ran at once (normal for a minute while Render swaps versions). Telegram settles it by itself.
+        log.warning("Telegram Conflict: another instance was polling; ignoring (no alert)")
+        return
     log.error("Unhandled error", exc_info=context.error)
     if time.time() - _last_alert > 600:
         _last_alert = time.time()
