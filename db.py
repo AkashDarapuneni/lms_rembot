@@ -4,6 +4,7 @@ A remote database is needed on hosts whose disk is wiped on restart (e.g. Render
   postgresql://user:pass@host:5432/db   -> Postgres (Supabase, Neon, ...)
   mysql://user:pass@host:4000/db        -> MySQL-compatible (TiDB Cloud, ...)
 """
+import time
 import sqlite3
 from urllib.parse import unquote, urlparse
 
@@ -50,6 +51,11 @@ CREATE TABLE IF NOT EXISTS stats (
     streak BIGINT DEFAULT 0, best_streak BIGINT DEFAULT 0, last_day VARCHAR(10) DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS admins (chat_id BIGINT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS course_offsets (chat_id BIGINT, course_id BIGINT, offsets VARCHAR(100), PRIMARY KEY (chat_id, course_id));
+CREATE TABLE IF NOT EXISTS announcements (id BIGINT PRIMARY KEY, run_at BIGINT, text VARCHAR(3000), audience VARCHAR(10), sent INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS exams (id BIGINT PRIMARY KEY, title VARCHAR(100), exam_ts BIGINT);
+CREATE TABLE IF NOT EXISTS ratings (chat_id BIGINT PRIMARY KEY, stars INTEGER, comment VARCHAR(1000), ts BIGINT, name VARCHAR(80), username VARCHAR(40));
+CREATE TABLE IF NOT EXISTS kv (k VARCHAR(60) PRIMARY KEY, v VARCHAR(300));
 CREATE TABLE IF NOT EXISTS media_pool (
     file_unique_id VARCHAR(100) PRIMARY KEY,
     file_id TEXT, kind VARCHAR(12), tag VARCHAR(8),
@@ -70,6 +76,18 @@ NEW_USER_COLUMNS = [
     ("lang", "VARCHAR(2) DEFAULT 'en'"),  # 'en' or 'te' for the plain parts of messages
     ("board", "INTEGER DEFAULT 0"),  # 1 = shows up on the friends leaderboard
     ("name", "VARCHAR(60)"),  # display name used only on the leaderboard
+    ("mute_until", "BIGINT DEFAULT 0"),  # "mute everything today"
+    ("snooze_count", "INTEGER DEFAULT 0"),
+    ("uses", "BIGINT DEFAULT 0"),  # button/menu taps, used to time the rating question
+    ("rated", "INTEGER DEFAULT 0"),
+    ("last_rating_ask", "BIGINT DEFAULT 0"),
+    ("sync_fail", "INTEGER DEFAULT 0"),  # consecutive failed syncs
+    ("last_ok_sync", "BIGINT DEFAULT 0"),
+    ("badges", "VARCHAR(200) DEFAULT ''"),
+    ("quote_on", "INTEGER DEFAULT 0"),  # daily dialogue card
+    ("last_quote", "VARCHAR(10)"),
+    ("last_exam", "VARCHAR(10)"),
+    ("reconnect_asked", "BIGINT DEFAULT 0"),
 ]
 
 
@@ -190,11 +208,11 @@ class DB:
         )
 
     def set_field(self, chat_id, field, value):
-        assert field in {"tz", "offsets", "digest_time", "last_digest", "quiet_start", "quiet_end", "last_sync", "style", "memes", "ai_lines", "weekly", "last_weekly", "lang", "board", "name"}
+        assert field in {"tz", "offsets", "digest_time", "last_digest", "quiet_start", "quiet_end", "last_sync", "style", "memes", "ai_lines", "weekly", "last_weekly", "lang", "board", "name", "mute_until", "snooze_count", "uses", "rated", "last_rating_ask", "sync_fail", "last_ok_sync", "badges", "quote_on", "last_quote", "last_exam", "reconnect_asked"}
         self._exec(f"UPDATE users SET {field}=? WHERE chat_id=?", (value, chat_id))
 
     def delete_user(self, chat_id):
-        for t in ("users", "events", "sent", "muted", "stats"):
+        for t in ("users", "events", "sent", "muted", "stats", "course_offsets", "ratings"):
             self._exec(f"DELETE FROM {t} WHERE chat_id=?", (chat_id,))
 
     # ---- events ----
@@ -388,4 +406,86 @@ class DB:
     def recent_users(self, limit=10):
         return self._exec(
             f"SELECT chat_id, source, last_sync, lang, style FROM users WHERE token_enc IS NOT NULL ORDER BY last_sync DESC LIMIT {int(limit)}"
+        ).fetchall()
+
+    # ---- key/value, points, per-course offsets ----
+    def kv_get(self, k, default=None):
+        r = self._exec("SELECT v FROM kv WHERE k=?", (k,)).fetchone()
+        return r["v"] if r else default
+
+    def kv_set(self, k, v):
+        self._upsert("kv", ["k", "v"], (k, str(v)), ["k"], ["v"])
+
+    def add_points(self, chat_id, points):
+        s = self.get_stats(chat_id)
+        cols = ["chat_id", "points", "submitted", "early", "streak", "best_streak", "last_day"]
+        self._upsert("stats", cols, (chat_id, s["points"] + points, s["submitted"], s["early"], s["streak"], s["best_streak"], s["last_day"]),
+                     ["chat_id"], cols[1:])
+
+    def course_offsets(self, chat_id):
+        return {int(r["course_id"]): r["offsets"] for r in self._exec("SELECT course_id, offsets FROM course_offsets WHERE chat_id=?", (chat_id,)).fetchall()}
+
+    def set_course_offsets(self, chat_id, course_id, offsets):
+        if offsets:
+            self._upsert("course_offsets", ["chat_id", "course_id", "offsets"], (chat_id, course_id, offsets), ["chat_id", "course_id"], ["offsets"])
+        else:
+            self._exec("DELETE FROM course_offsets WHERE chat_id=? AND course_id=?", (chat_id, course_id))
+
+    def courses_of(self, chat_id):
+        rows = self._exec("SELECT DISTINCT course_id, course FROM events WHERE chat_id=? AND done=0", (chat_id,)).fetchall()
+        return [(int(r["course_id"]), r["course"]) for r in rows]
+
+    # ---- announcements, exams, ratings ----
+    def ann_add(self, run_at, text, audience):
+        self._exec("INSERT INTO announcements(id, run_at, text, audience, sent) VALUES(?,?,?,?,0)", (int(time.time() * 1000), run_at, text, audience))
+
+    def ann_due(self, now):
+        return self._exec("SELECT * FROM announcements WHERE sent=0 AND run_at<=?", (now,)).fetchall()
+
+    def ann_done(self, ann_id):
+        self._exec("UPDATE announcements SET sent=1 WHERE id=?", (ann_id,))
+
+    def ann_pending(self):
+        return self._exec("SELECT * FROM announcements WHERE sent=0 ORDER BY run_at").fetchall()
+
+    def exam_add(self, title, exam_ts):
+        self._exec("INSERT INTO exams(id, title, exam_ts) VALUES(?,?,?)", (int(time.time() * 1000), title, exam_ts))
+
+    def exams_upcoming(self, now):
+        return self._exec("SELECT * FROM exams WHERE exam_ts>=? ORDER BY exam_ts", (now,)).fetchall()
+
+    def exam_delete_all(self):
+        self._exec("DELETE FROM exams")
+
+    def rating_set(self, chat_id, stars, comment, ts, name="", username=""):
+        self._upsert("ratings", ["chat_id", "stars", "comment", "ts", "name", "username"], (chat_id, stars, comment, ts, name[:80], username[:40]),
+                     ["chat_id"], ["stars", "comment", "ts", "name", "username"])
+
+    def ratings_list(self, limit=15):
+        return self._exec(f"SELECT * FROM ratings ORDER BY ts DESC LIMIT {int(limit)}").fetchall()
+
+    def rating_summary(self):
+        r = self._exec("SELECT COUNT(*) AS n, AVG(stars) AS a FROM ratings").fetchone()
+        return int(r["n"] or 0), float(r["a"] or 0)
+
+    def bump_uses(self, chat_id):
+        self._exec("UPDATE users SET uses=uses+1 WHERE chat_id=?", (chat_id,))
+
+    def users_where(self, kind, now):
+        """Recipient ids for a targeted broadcast: all | te | board | due24."""
+        if kind == "te":
+            q, a = "SELECT chat_id FROM users WHERE token_enc IS NOT NULL AND lang='te'", ()
+        elif kind == "board":
+            q, a = "SELECT chat_id FROM users WHERE token_enc IS NOT NULL AND board=1", ()
+        elif kind == "due24":
+            q, a = ("SELECT DISTINCT u.chat_id AS chat_id FROM users u JOIN events e ON e.chat_id=u.chat_id "
+                    "WHERE u.token_enc IS NOT NULL AND e.done=0 AND e.due_ts>=? AND e.due_ts<?"), (now, now + 86400)
+        else:
+            q, a = "SELECT chat_id FROM users WHERE token_enc IS NOT NULL", ()
+        return [int(r["chat_id"]) for r in self._exec(q, a).fetchall()]
+
+    def failing_users(self, now):
+        return self._exec(
+            "SELECT chat_id, sync_fail, last_ok_sync FROM users WHERE token_enc IS NOT NULL AND (sync_fail>=3 OR (last_ok_sync>0 AND last_ok_sync<?))",
+            (now - 86400,),
         ).fetchall()

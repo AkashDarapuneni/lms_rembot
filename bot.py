@@ -172,18 +172,19 @@ def tr(lang, key, **kw):
     return TR.get(lang or "en", TR["en"])[key].format(**kw)
 
 
-def share_url() -> str:
+def share_url(uid=None) -> str:
     if not BOT_USERNAME:
         return ""
     from urllib.parse import quote
-    return (f"https://t.me/share/url?url={quote('https://t.me/' + BOT_USERNAME)}"
+    link = "https://t.me/" + BOT_USERNAME + (f"?start=ref_{uid}" if uid else "")
+    return (f"https://t.me/share/url?url={quote(link)}"
             f"&text={quote('Never miss an LMS deadline! This bot reminds you before every assignment 🔥')}")
 
 
-def extras_markup(logout=False):
+def extras_markup(logout=False, uid=None):
     rows = []
     if share_url():
-        rows.append([InlineKeyboardButton("📣 Share with friends", url=share_url())])
+        rows.append([InlineKeyboardButton("📣 Invite friends (+20 pts each)" if uid else "📣 Share with friends", url=share_url(uid))])
     if GROUP_URL:
         rows.append([InlineKeyboardButton("👥 Join our community", url=GROUP_URL)])
     if logout:
@@ -231,6 +232,7 @@ MENU_ROWS = [
     [BTN_TODAY, BTN_WEEK, BTN_UPCOMING],
     [BTN_OVERDUE, BTN_SETTINGS, BTN_HELP],
     [BTN_STATS, BTN_FUN, BTN_CONNECT],
+    ["🧰 Tools", "🧠 Plan my week", "☑️ Tick done"],
 ]
 
 
@@ -309,6 +311,9 @@ async def sync_user(app: Application, user, notify: bool = True) -> int:
         if row["event_id"] not in fetched_ids:
             db.mark_done(chat_id, row["event_id"])
     db.set_field(chat_id, "last_sync", int(time.time()))
+    db.set_field(chat_id, "last_ok_sync", int(time.time()))
+    if user["sync_fail"]:
+        db.set_field(chat_id, "sync_fail", 0)
     return len(fetched_ids)
 
 
@@ -318,8 +323,10 @@ async def sync_job(context: ContextTypes.DEFAULT_TYPE):
             await sync_user(context.application, user)
         except moodle.MoodleError as ex:
             log.warning("sync failed for %s: %s", user["chat_id"], ex)
+            db.set_field(user["chat_id"], "sync_fail", (user["sync_fail"] or 0) + 1)
         except Exception:
             log.exception("sync crashed for %s", user["chat_id"])
+            db.set_field(user["chat_id"], "sync_fail", (user["sync_fail"] or 0) + 1)
 
 
 # ---------- reminders ----------
@@ -327,9 +334,13 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
     now = int(time.time())
     for user in db.all_users():
         chat_id, tz = user["chat_id"], user["tz"]
-        offsets = parse_offsets(user["offsets"] or DEFAULT_OFFSETS)
+        if (user["mute_until"] or 0) > now:
+            continue  # "mute all today" is on
+        user_offsets = parse_offsets(user["offsets"] or DEFAULT_OFFSETS)
+        course_offs = db.course_offsets(chat_id)
         quiet = in_quiet_hours(now, tz, user["quiet_start"], user["quiet_end"])
         for e in db.pending_events(chat_id, since=now - 3600):
+            offsets = parse_offsets(course_offs[e["course_id"]]) if e["course_id"] in course_offs else user_offsets
             # Skip events too far away to need a reminder yet (saves database queries)
             if not e["snooze_until"] and e["due_ts"] - now > offsets[0]:
                 continue
@@ -469,8 +480,11 @@ def connect_markup():
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user = db.get_user(chat_id)
+    if context.args and context.args[0].startswith("ref_") and context.args[0][4:].isdigit() and not (user and user["token_enc"]):
+        if not db.kv_get(f"ref:{chat_id}") and int(context.args[0][4:]) != chat_id:
+            db.kv_set(f"ref:{chat_id}", context.args[0][4:])
     if user and user["token_enc"]:
-        kb = extras_markup(logout=True)
+        kb = extras_markup(logout=True, uid=chat_id)
         await update.message.reply_text("Menu buttons are ready 👇", reply_markup=main_keyboard(True))
         await update.message.reply_text(
             "✅ <b>You are already logged in.</b>\n\nDo you want to log out?",
@@ -552,6 +566,7 @@ async def link_calendar(app: Application, chat_id: int, url: str):
     if extras_markup():
         await app.bot.send_message(chat_id, "📣 Invite your friends so they never miss a deadline either:", reply_markup=extras_markup())
     await notify_admins(app.bot, f"🆕 New user connected (Telegram ID {chat_id}). Total users: {db.count_users()}")
+    await reward_referral(app.bot, chat_id)
 
 
 async def _finish_login(update, context, site, token, source="api"):
@@ -574,6 +589,7 @@ async def _finish_login(update, context, site, token, source="api"):
     if extras_markup():
         await context.bot.send_message(chat_id, "📣 Invite your friends so they never miss a deadline either:", reply_markup=extras_markup())
     await notify_admins(context.bot, f"🆕 New user connected (Telegram ID {chat_id}). Total users: {db.count_users()}")
+    await reward_referral(context.bot, chat_id)
 
 
 async def cmd_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -851,7 +867,8 @@ async def cmd_stats(update, context):
     await update.effective_message.reply_text(
         f"🏆 <b>Your stats</b>\n\nLevel: <b>{level_for(st['points'])}</b>\nPoints: {st['points']}{bar_to}\n"
         f"✅ Submitted: {st['submitted']}  ⚡ Early: {st['early']}\n"
-        f"🔥 Streak: {st['streak']} day(s)  (best {st['best_streak']})\n\n"
+        f"🔥 Streak: {st['streak']} day(s)  (best {st['best_streak']})\n"
+        f"🎖 Badges: {', '.join(BADGES[b] for b in filter(None, (user['badges'] or '').split(',')) if b in BADGES) or 'none yet'}\n\n"
         "You earn 10 points for every task you mark Submitted, +5 if it was more than a day before the deadline.",
         parse_mode=ParseMode.HTML,
     )
@@ -915,52 +932,36 @@ _chat_times: dict[int, list[float]] = {}
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Menu button taps arrive as text and run their command; any other text is a question for Gemini."""
     text = (update.message.text or "").strip()
+    chat_id = update.effective_chat.id
     action = MENU_ACTIONS.get(text)
     if action:
         context.user_data.pop("await_fb", None)
+        context.user_data.pop("adm", None)
+        touch(chat_id)
         await action(update, context)
+        await maybe_ask_rating(context.bot, chat_id)
         return
-    if context.user_data.pop("await_bc", False) and is_admin(update.effective_user):
-        context.args = text.split()
-        await cmd_broadcast(update, context)
+    if is_admin(update.effective_user) and await admin_flow_text(update, context, text):
+        return
+    if context.user_data.pop("await_rate_comment", False):
+        u = update.effective_user
+        db.rating_set(chat_id, int(context.user_data.pop("stars", 3)), text[:900], int(time.time()), u.full_name or "", u.username or "")
+        await notify_admins(context.bot, f"⭐ Rating comment from {u.full_name} (@{u.username or '-'}): {text[:900]}")
+        await update.message.reply_text("🙏 Thank you, this really helps us improve!")
         return
     if context.user_data.pop("await_fb", False):
+        now = time.time()
+        recent = [t for t in _fb_times.get(chat_id, []) if now - t < 3600]
+        if len(recent) >= 3:
+            await update.message.reply_text("You've sent a few messages already. Please try again in an hour 🙏")
+            return
+        _fb_times[chat_id] = recent + [now]
         u = update.effective_user
         await notify_admins(context.bot, f"💡 Feedback from {u.full_name} (@{u.username or '-'}, ID {u.id}):\n\n{text[:1500]}")
         await update.message.reply_text("🙏 Thank you! Your message was sent to the admin.")
         return
-    if not gemini.enabled():
-        await update.message.reply_text("Use the buttons below or /help. (AI answers are off: the admin has not set GEMINI_API_KEY.)")
-        return
-    chat_id = update.effective_chat.id
-    now = time.time()
-    recent = [t for t in _chat_times.get(chat_id, []) if now - t < 60]
-    if len(recent) >= 6:
-        await update.message.reply_text("Slow down a little 😅 Try again in a minute.")
-        return
-    _chat_times[chat_id] = recent + [now]
-    user = db.get_user(chat_id)
-    tz = user["tz"] if user else "Asia/Kolkata"
-    deadlines = "The student is not connected, so you know no deadlines."
-    if user and user["token_enc"]:
-        if SHARE_DEADLINES:
-            evs = db.pending_events(chat_id, since=int(now) - 86400)[:15]
-            deadlines = ("Pending tasks:\n" + "\n".join(f"- {e['name']} ({e['course']}) due {fmt_due(e['due_ts'], tz)}" for e in evs)) if evs else "The student has no pending tasks."
-        else:
-            deadlines = "You have no access to the student's deadlines."
-    await context.bot.send_chat_action(chat_id, "typing")
-    history = context.user_data.setdefault("hist", [])
-    try:
-        stamp = datetime.now(ZoneInfo(tz)).strftime("%a %d %b %Y %H:%M")
-    except ZoneInfoNotFoundError:
-        stamp = datetime.now().strftime("%a %d %b %Y %H:%M")
-    answer = await gemini.chat(text, history, deadlines, DEFAULT_SITE, tz, stamp)
-    if not answer:
-        await update.message.reply_text("I couldn't think of an answer right now. Try again, or use the buttons.")
-        return
-    history += [("user", text[:800]), ("model", answer[:800])]
-    del history[:-8]
-    await update.message.reply_text(answer[:3500])
+    touch(chat_id)
+    await gemini_answer(context, chat_id, text, update.message.reply_text)
 
 
 async def weekly_job(context: ContextTypes.DEFAULT_TYPE):
@@ -1037,7 +1038,9 @@ async def cmd_admin(update, context):
         )
         return
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 Broadcast to all students", callback_data="adm:bc")],
+        [InlineKeyboardButton("📢 Broadcast now", callback_data="adm:bc"), InlineKeyboardButton("🗓 Schedule announcement", callback_data="adm:sched")],
+        [InlineKeyboardButton("📝 Exam countdown", callback_data="adm:exam"), InlineKeyboardButton("🗓 Scheduled list", callback_data="adm:pending")],
+        [InlineKeyboardButton("🩺 Sync health", callback_data="adm:health"), InlineKeyboardButton("⭐ Ratings", callback_data="adm:ratings")],
         [InlineKeyboardButton("📊 Stats", callback_data="adm:stats"), InlineKeyboardButton("👥 Recent users", callback_data="adm:users")],
         [InlineKeyboardButton("🔄 Sync everyone now", callback_data="adm:sync"), InlineKeyboardButton("🗄 Backup now", callback_data="adm:backup")],
         [InlineKeyboardButton("🤖 Test Gemini", callback_data="adm:gemini"), InlineKeyboardButton("🖼 Memes saved", callback_data="adm:memes")],
@@ -1095,6 +1098,412 @@ async def on_error(update, context):
         await notify_admins(context.bot, f"⚠️ Bot error: {type(context.error).__name__}: {str(context.error)[:300]}")
 
 
+# ======================= more features =======================
+BADGES = {
+    "streak7": "🔥 7-day streak", "streak30": "👑 30-day streak", "early5": "⚡ Early bird (5 tasks early)",
+    "sub10": "🎯 10 tasks submitted", "sub50": "🏆 50 tasks submitted",
+}
+_fb_times: dict[int, list[float]] = {}
+_gem_day: dict[int, tuple[str, int]] = {}
+AUDIENCES = {"all": "👥 Everyone", "te": "🌐 Telugu-style users", "due24": "⏰ Has a task due in 24h", "board": "🏅 Leaderboard members"}
+
+
+def local_now(user):
+    try:
+        return datetime.fromtimestamp(time.time(), ZoneInfo(user["tz"]))
+    except ZoneInfoNotFoundError:
+        return datetime.fromtimestamp(time.time(), ZoneInfo("Asia/Kolkata"))
+
+
+def new_badges(chat_id) -> list[str]:
+    st = db.get_stats(chat_id)
+    user = db.get_user(chat_id)
+    have = set(filter(None, (user["badges"] or "").split(","))) if user else set()
+    earned = set()
+    if st["best_streak"] >= 7: earned.add("streak7")
+    if st["best_streak"] >= 30: earned.add("streak30")
+    if st["early"] >= 5: earned.add("early5")
+    if st["submitted"] >= 10: earned.add("sub10")
+    if st["submitted"] >= 50: earned.add("sub50")
+    fresh = sorted(earned - have)
+    if fresh and user:
+        db.set_field(chat_id, "badges", ",".join(sorted(have | earned)))
+    return fresh
+
+
+# ---- rating / feedback in the middle of use ----
+async def maybe_ask_rating(bot, chat_id, force=False):
+    user = db.get_user(chat_id)
+    if not user or user["rated"]:
+        return
+    now = int(time.time())
+    if not force and (user["uses"] < 12 or now - (user["last_rating_ask"] or 0) < 7 * 86400):
+        return
+    db.set_field(chat_id, "last_rating_ask", now)
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⭐", callback_data="rate:1"), InlineKeyboardButton("⭐⭐", callback_data="rate:2"), InlineKeyboardButton("⭐⭐⭐", callback_data="rate:3")],
+        [InlineKeyboardButton("⭐⭐⭐⭐", callback_data="rate:4"), InlineKeyboardButton("⭐⭐⭐⭐⭐", callback_data="rate:5")],
+        [InlineKeyboardButton("Maybe later", callback_data="rate:0")],
+    ])
+    try:
+        await bot.send_message(chat_id, "💬 <b>Quick question!</b>\nHow are you liking the bot so far? Tap the stars:",
+                               parse_mode=ParseMode.HTML, reply_markup=kb)
+    except Exception:
+        pass
+
+
+def touch(chat_id):
+    try:
+        db.bump_uses(chat_id)
+    except Exception:
+        pass
+
+
+# ---- Gemini helper used by chat and the study planner ----
+async def gemini_answer(context, chat_id, text, reply):
+    if not gemini.enabled():
+        await reply("🤖 AI answers are off right now (the admin has not set the Gemini key).")
+        return
+    now = time.time()
+    recent = [t for t in _chat_times.get(chat_id, []) if now - t < 60]
+    day = time.strftime("%Y-%m-%d")
+    d_day, d_n = _gem_day.get(chat_id, (day, 0))
+    if d_day != day:
+        d_n = 0
+    if len(recent) >= 6:
+        await reply("Slow down a little 😅 Try again in a minute.")
+        return
+    if d_n >= int(os.getenv("GEMINI_DAILY_LIMIT", "40")):
+        await reply("You've used today's AI questions. Come back tomorrow 🙏")
+        return
+    _chat_times[chat_id] = recent + [now]
+    _gem_day[chat_id] = (day, d_n + 1)
+    user = db.get_user(chat_id)
+    tz = user["tz"] if user else "Asia/Kolkata"
+    deadlines = "The student is not connected, so you know no deadlines."
+    if user and user["token_enc"]:
+        if SHARE_DEADLINES:
+            evs = db.pending_events(chat_id, since=int(now) - 86400)[:15]
+            deadlines = ("Pending tasks:\n" + "\n".join(f"- {e['name']} ({e['course']}) due {fmt_due(e['due_ts'], tz)}" for e in evs)) if evs else "The student has no pending tasks."
+        else:
+            deadlines = "You have no access to the student's deadlines."
+    try:
+        await context.bot.send_chat_action(chat_id, "typing")
+    except Exception:
+        pass
+    history = context.user_data.setdefault("hist", [])
+    try:
+        stamp = datetime.now(ZoneInfo(tz)).strftime("%a %d %b %Y %H:%M")
+    except ZoneInfoNotFoundError:
+        stamp = datetime.now().strftime("%a %d %b %Y %H:%M")
+    answer = await gemini.chat(text, history, deadlines, DEFAULT_SITE, tz, stamp)
+    if not answer:
+        await reply("I couldn't think of an answer right now. Try again, or use the buttons.")
+        return
+    history += [("user", text[:800]), ("model", answer[:800])]
+    del history[:-8]
+    await reply(answer[:3500])
+
+
+# ---- Tools panel ----
+BTN_TOOLS, BTN_PLAN, BTN_TICK = "🧰 Tools", "🧠 Plan my week", "☑️ Tick done"
+
+
+def tools_panel(user):
+    muted = (user["mute_until"] or 0) > time.time()
+    rows = [
+        [InlineKeyboardButton("🧠 Plan my week (AI)", callback_data="tl:plan"), InlineKeyboardButton("☑️ Tick finished tasks", callback_data="tick:list")],
+        [InlineKeyboardButton(f"😴 Mute all today: {_onoff(muted)}", callback_data="tl:mute"), InlineKeyboardButton("📚 Course reminder times", callback_data="cm:list")],
+        [InlineKeyboardButton("📝 Exam countdown", callback_data="tl:exams"), InlineKeyboardButton(f"🎴 Daily dialogue card: {_onoff(user['quote_on'])}", callback_data="tl:quote")],
+        [InlineKeyboardButton("🏅 Leaderboard", callback_data="tl:board"), InlineKeyboardButton("🎖 My badges", callback_data="tl:badges")],
+        [InlineKeyboardButton("🔐 My data (download / delete)", callback_data="tl:data")],
+        [InlineKeyboardButton("💡 Feedback", callback_data="fb:ask"), InlineKeyboardButton("⭐ Rate the bot", callback_data="tl:rate")],
+    ]
+    return "🧰 <b>Tools</b>\nEverything extra lives here. Tap what you need:", InlineKeyboardMarkup(rows)
+
+
+async def cmd_tools(update, context):
+    user = await require_login(update)
+    if not user:
+        return
+    touch(user["chat_id"])
+    text, kb = tools_panel(user)
+    await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+
+
+async def cmd_plan(update, context):
+    user = await require_login(update)
+    if not user:
+        return
+    touch(user["chat_id"])
+    await gemini_answer(context, user["chat_id"],
+                        "Make a realistic day-by-day study plan for my next 7 days using my pending tasks. Short bullet lines, one per day.",
+                        update.effective_message.reply_text)
+
+
+async def cmd_tick(update, context):
+    user = await require_login(update)
+    if not user:
+        return
+    await show_tick(update.effective_message, user["chat_id"], reply=True)
+
+
+async def show_tick(message, chat_id, reply=False):
+    rows = db.pending_events(chat_id, since=int(time.time()) - 14 * 86400)[:10]
+    if not rows:
+        text, kb = "🎉 Nothing pending. You're all caught up!", None
+    else:
+        text = "☑️ <b>Tap the tasks you have finished</b> (you earn points):"
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"⬜ {e['name'][:45]}", callback_data=f"tick:{e['event_id']}")] for e in rows])
+    if reply:
+        await message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+    else:
+        await message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+
+
+async def complete_task(context, chat_id, event_id, quiet=False):
+    """Mark a task done and award points/badges. Returns a one-line summary."""
+    ev = db.get_event(chat_id, event_id)
+    db.mark_done(chat_id, event_id)
+    cur = db.get_user(chat_id)
+    tz = cur["tz"] if cur else "Asia/Kolkata"
+    try:
+        zone = ZoneInfo(tz)
+    except ZoneInfoNotFoundError:
+        zone = ZoneInfo("Asia/Kolkata")
+    today = datetime.now(zone).date()
+    early = bool(ev) and ev["due_ts"] - time.time() > 86400
+    gained = 15 if early else 10
+    st = db.record_submit(chat_id, gained, early, today.isoformat(), (today - timedelta(days=1)).isoformat())
+    for b in new_badges(chat_id):
+        await send_fx(context.bot, chat_id, f"🎖 <b>New badge unlocked!</b>\n{BADGES[b]}", FX_PARTY, parse_mode=ParseMode.HTML)
+    return gained, st
+
+
+# ---- course reminder times ----
+def course_menu(chat_id):
+    co = db.course_offsets(chat_id)
+    courses = db.courses_of(chat_id)
+    if not courses:
+        return "📚 No courses with pending tasks yet.", None
+    rows = [[InlineKeyboardButton(f"{c[:30]}  ({co[cid] if cid in co else 'default'})"[:60], callback_data=f"cm:{cid}")] for cid, c in courses[:12]]
+    return "📚 <b>Pick a course</b> to set its own reminder times:", InlineKeyboardMarkup(rows)
+
+
+# ---- exams ----
+async def cmd_exam(update, context):
+    """Admin: /exam 2026-11-20 Mid-term exams"""
+    if not is_admin(update.effective_user):
+        return
+    try:
+        day = datetime.strptime(context.args[0], "%Y-%m-%d").replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+        title = " ".join(context.args[1:]).strip()[:90]
+        assert title
+    except Exception:
+        await update.message.reply_text("Usage: /exam 2026-11-20 Mid-term exams\n/exams lists them, /clearexams removes all.")
+        return
+    db.exam_add(title, int(day.timestamp()))
+    await update.message.reply_text(f"✅ Exam saved: {title} on {context.args[0]}. Students get a daily countdown at 8 AM.")
+
+
+async def cmd_exams(update, context):
+    rows = db.exams_upcoming(int(time.time()) - 86400)
+    if not rows:
+        await update.effective_message.reply_text("📝 No exams announced yet.")
+        return
+    now = time.time()
+    await update.effective_message.reply_text("📝 <b>Exams</b>\n" + "\n".join(
+        f"• {esc(r['title'])}: <b>{max(0, int((r['exam_ts'] - now) // 86400))} days</b> left" for r in rows), parse_mode=ParseMode.HTML)
+
+
+async def cmd_clearexams(update, context):
+    if is_admin(update.effective_user):
+        db.exam_delete_all()
+        await update.message.reply_text("Exams cleared.")
+
+
+async def exam_job(context: ContextTypes.DEFAULT_TYPE):
+    now = int(time.time())
+    exams = [e for e in db.exams_upcoming(now) if e["exam_ts"] - now < 60 * 86400]
+    if not exams:
+        return
+    for user in db.all_users():
+        loc = local_now(user)
+        today = loc.strftime("%Y-%m-%d")
+        if loc.strftime("%H:%M") != "08:00" or user["last_exam"] == today:
+            continue
+        db.set_field(user["chat_id"], "last_exam", today)
+        lines = ["📝 <b>Exam countdown</b>"] + [f"• {esc(e['title'])}: <b>{max(0, int((e['exam_ts'] - now) // 86400))} days</b> left" for e in exams[:5]]
+        lines.append("\nPlan your revision today 💪")
+        try:
+            await context.bot.send_message(user["chat_id"], "\n".join(lines), parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+
+
+# ---- daily dialogue card ----
+async def quote_job(context: ContextTypes.DEFAULT_TYPE):
+    for user in db.all_users():
+        if not user["quote_on"]:
+            continue
+        loc = local_now(user)
+        today = loc.strftime("%Y-%m-%d")
+        if loc.strftime("%H:%M") != "09:00" or user["last_quote"] == today:
+            continue
+        db.set_field(user["chat_id"], "last_quote", today)
+        st = await punchlines.build(random.choice([86400, 21600, 7200]), None, bool(user["ai_lines"]))
+        try:
+            await send_fx(context.bot, user["chat_id"], f"🎴 <b>Today's dialogue</b>\n\n{st['emoji']} <i>\"{esc(st['quote'])}\"</i>\n\nHave a great day, hero! 💪",
+                          None, parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+
+
+# ---- group leaderboard ----
+async def cmd_setgroup(update, context):
+    """Admin: send /setgroup inside your students' group (add the bot there first)."""
+    if not is_admin(update.effective_user):
+        return
+    if update.effective_chat.type == "private":
+        await update.message.reply_text("Add me to your students' group, then send /setgroup there.")
+        return
+    db.kv_set("group_id", update.effective_chat.id)
+    await update.message.reply_text("✅ Done! Every Sunday 7 PM I will post the leaderboard here.")
+
+
+async def group_job(context: ContextTypes.DEFAULT_TYPE):
+    gid = db.kv_get("group_id")
+    if not gid:
+        return
+    loc = datetime.fromtimestamp(time.time(), ZoneInfo("Asia/Kolkata"))
+    today = loc.strftime("%Y-%m-%d")
+    if loc.weekday() != 6 or loc.strftime("%H:%M") != "19:00" or db.kv_get("group_last") == today:
+        return
+    db.kv_set("group_last", today)
+    rows = db.leaderboard(5)
+    if not rows:
+        return
+    medals = ["🥇", "🥈", "🥉", "4.", "5."]
+    text = "🏅 <b>Weekly leaderboard</b>\n\n" + "\n".join(f"{medals[i]} {esc(r['name'] or 'Student')} - ⭐ {r['points']} • 🔥 {r['streak']}" for i, r in enumerate(rows))
+    try:
+        await context.bot.send_message(int(gid), text + "\n\nJoin in: open the bot, ⚙️ Settings > Leaderboard ON", parse_mode=ParseMode.HTML)
+    except Exception:
+        log.warning("group post failed")
+
+
+# ---- scheduled announcements and targeted broadcast ----
+async def deliver(bot, text, ids):
+    sent = failed = 0
+    for cid in ids:
+        try:
+            await bot.send_message(cid, f"📢 {text}")
+            sent += 1
+        except Exception:
+            failed += 1
+        await asyncio.sleep(0.05)
+    return sent, failed
+
+
+async def announce_job(context: ContextTypes.DEFAULT_TYPE):
+    now = int(time.time())
+    for a in db.ann_due(now):
+        db.ann_done(a["id"])
+        sent, failed = await deliver(context.bot, a["text"], db.users_where(a["audience"], now))
+        await notify_admins(context.bot, f"🗓 Scheduled announcement sent to {sent} students (failed {failed}).")
+
+
+async def admin_flow_text(update, context, text):
+    """Steps of the admin broadcast / schedule flow typed after pressing a panel button."""
+    flow = context.user_data.get("adm")
+    if not flow:
+        return False
+    if text == "/cancel":
+        context.user_data.pop("adm", None)
+        await update.message.reply_text("Cancelled.")
+        return True
+    if flow["step"] == "text":
+        if flow["mode"] == "bc":
+            context.user_data.pop("adm", None)
+            sent, failed = await deliver(context.bot, text, db.users_where(flow["aud"], int(time.time())))
+            await update.message.reply_text(f"✅ Sent to {sent} students (failed: {failed}).")
+        else:
+            flow.update(text=text, step="when")
+            await update.message.reply_text("🕐 When should I send it? Type date and time in India time, like:\n2026-10-20 18:30")
+        return True
+    if flow["step"] == "when":
+        try:
+            when = datetime.strptime(text, "%Y-%m-%d %H:%M").replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+            assert when.timestamp() > time.time()
+        except Exception:
+            await update.message.reply_text("Please use the format 2026-10-20 18:30 (a future time), or /cancel.")
+            return True
+        db.ann_add(int(when.timestamp()), flow["text"], flow["aud"])
+        context.user_data.pop("adm", None)
+        await update.message.reply_text(f"🗓 Scheduled for {text} IST to: {AUDIENCES[flow['aud']]}")
+        return True
+    return False
+
+
+# ---- privacy ----
+async def send_my_data(context, chat_id):
+    user = db.get_user(chat_id)
+    if not user:
+        return
+    data = {
+        "telegram_id": chat_id, "lms_user_id": user["moodle_userid"], "site": user["site_url"], "timezone": user["tz"],
+        "reminder_times": user["offsets"], "settings": {k: user[k] for k in ("style", "memes", "ai_lines", "weekly", "lang", "board")},
+        "stats": db.get_stats(chat_id),
+        "tasks": [{"name": e["name"], "course": e["course"], "due": fmt_due(e["due_ts"], user["tz"]), "done": bool(e["done"])}
+                  for e in db.pending_events(chat_id, include_muted=True)],
+        "note": "Your LMS calendar link is stored encrypted and is not included here.",
+    }
+    await context.bot.send_document(chat_id, io.BytesIO(json.dumps(data, indent=1, ensure_ascii=False, default=str).encode()),
+                                    filename="my-data.json", caption="🔐 Everything this bot stores about you.")
+
+
+async def cmd_mydata(update, context):
+    user = await require_login(update)
+    if user:
+        await send_my_data(context, user["chat_id"])
+
+
+# ---- referral reward ----
+async def reward_referral(bot, new_chat_id):
+    ref = db.kv_get(f"ref:{new_chat_id}")
+    if not ref or db.kv_get(f"refdone:{new_chat_id}"):
+        return
+    db.kv_set(f"refdone:{new_chat_id}", 1)
+    ref = int(ref)
+    if ref == new_chat_id or not db.get_user(ref):
+        return
+    db.add_points(ref, 20)
+    db.add_points(new_chat_id, 20)
+    for cid, txt in ((ref, "🎁 Your friend joined from your invite! +20 points for you."), (new_chat_id, "🎁 Welcome bonus: +20 points for joining through a friend's invite!")):
+        try:
+            await send_fx(bot, cid, txt, FX_PARTY)
+        except Exception:
+            pass
+
+
+# ---- sync health (admin) ----
+async def ask_failing_to_reconnect(bot):
+    now = int(time.time())
+    n = 0
+    for r in db.failing_users(now):
+        u = db.get_user(r["chat_id"])
+        if now - (u["reconnect_asked"] or 0) < 3 * 86400:
+            continue
+        db.set_field(r["chat_id"], "reconnect_asked", now)
+        try:
+            await bot.send_message(r["chat_id"], "⚠️ I can't reach your LMS calendar any more, so reminders may stop.\nPlease log out and connect again to fix it.",
+                                   reply_markup=extras_markup(logout=True))
+            n += 1
+        except Exception:
+            pass
+    return n
+
+
+
 async def pool_job(context: ContextTypes.DEFAULT_TYPE):
     try:
         await punchlines.refill_once()
@@ -1146,19 +1555,12 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = q.message.chat_id
     parts = q.data.split(":")
     action = parts[0]
+    if action not in ("rate",):
+        touch(chat_id)
     if action == "done":
-        ev = db.get_event(chat_id, int(parts[1]))
-        db.mark_done(chat_id, int(parts[1]))
         cur = db.get_user(chat_id)
-        tz, lang = (cur["tz"], cur["lang"]) if cur else ("Asia/Kolkata", "en")
-        try:
-            zone = ZoneInfo(tz)
-        except ZoneInfoNotFoundError:
-            zone = ZoneInfo("Asia/Kolkata")
-        today = datetime.now(zone).date()
-        early = bool(ev) and ev["due_ts"] - time.time() > 86400
-        st = db.record_submit(chat_id, 15 if early else 10, early, today.isoformat(), (today - timedelta(days=1)).isoformat())
-        gained = 15 if early else 10
+        lang = cur["lang"] if cur else "en"
+        gained, st = await complete_task(context, chat_id, int(parts[1]))
         await q.answer(f"🎉 Awesome! Submitted!\n+{gained} points  •  🔥 {st['streak']} day streak", show_alert=True)
         try:
             await q.edit_message_text(
@@ -1171,11 +1573,105 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🎉 <b>{tr(lang, 'task_done')}</b> 🥳\n{level_for(st['points'])}  •  ⭐ {st['points']} pts  •  🔥 {st['streak']}-day streak",
             FX_PARTY, parse_mode=ParseMode.HTML,
         )
+        if st["submitted"] in (3, 10):
+            await maybe_ask_rating(context.bot, chat_id, force=True)  # a happy moment to ask
     elif action == "snz":
         until = int(time.time()) + int(parts[2]) * 60
         db.set_snooze(chat_id, int(parts[1]), until)
         await q.answer("Snoozed")
         await q.edit_message_reply_markup(None)
+        u = db.get_user(chat_id)
+        n = (u["snooze_count"] or 0) + 1 if u else 0
+        db.set_field(chat_id, "snooze_count", n)
+        if u and n >= 3:
+            db.set_field(chat_id, "snooze_count", 0)
+            await context.bot.send_message(chat_id, "😴 You snooze a lot! Want me to remind you earlier, 3 hours before each deadline?",
+                                           reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏰ Yes, add a 3h reminder", callback_data="early:add")]]))
+    elif action == "early":
+        u = db.get_user(chat_id)
+        offs = [o for o in (u["offsets"] or DEFAULT_OFFSETS).split(",") if o]
+        if "3h" not in offs:
+            offs.append("3h")
+            offs = [fmt_offset(o) for o in sorted(parse_offsets(",".join(offs)), reverse=True)]
+            db.set_field(chat_id, "offsets", ",".join(offs))
+        await q.answer("Added!")
+        await q.edit_message_text("✅ Done. I'll also remind you 3 hours before each deadline.")
+    elif action == "tick":
+        if parts[1] == "list":
+            await q.answer()
+            await show_tick(q.message, chat_id, reply=True)
+        else:
+            gained, st = await complete_task(context, chat_id, int(parts[1]))
+            await q.answer(f"✅ +{gained} points • 🔥 {st['streak']}-day streak", show_alert=False)
+            await show_tick(q.message, chat_id)
+    elif action == "tl":
+        u = db.get_user(chat_id)
+        key = parts[1]
+        await q.answer()
+        if not u:
+            return
+        if key == "plan":
+            await gemini_answer(context, chat_id, "Make a realistic day-by-day study plan for my next 7 days using my pending tasks. Short bullet lines, one per day.", q.message.reply_text)
+        elif key == "mute":
+            on = (u["mute_until"] or 0) > time.time()
+            end = local_now(u).replace(hour=23, minute=59, second=59)
+            db.set_field(chat_id, "mute_until", 0 if on else int(end.timestamp()))
+            text, kb = tools_panel(db.get_user(chat_id))
+            await q.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        elif key == "quote":
+            db.set_field(chat_id, "quote_on", 0 if u["quote_on"] else 1)
+            text, kb = tools_panel(db.get_user(chat_id))
+            await q.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        elif key == "exams":
+            await cmd_exams(NS_update(q), context)
+        elif key == "board":
+            await cmd_leaderboard(NS_update(q), context)
+        elif key == "badges":
+            have = [BADGES[b] for b in filter(None, (u["badges"] or "").split(",")) if b in BADGES]
+            locked = [v for k, v in BADGES.items() if k not in (u["badges"] or "")]
+            await q.message.reply_text("🎖 <b>Your badges</b>\n" + ("\n".join("✅ " + b for b in have) or "None yet") + "\n\n<b>To unlock</b>\n" + "\n".join("🔒 " + b for b in locked), parse_mode=ParseMode.HTML)
+        elif key == "data":
+            await q.message.reply_text("🔐 <b>Your data</b>\nI store only your Telegram ID, LMS user ID, an encrypted calendar link, your tasks and your settings. Your password is never stored.",
+                                       parse_mode=ParseMode.HTML,
+                                       reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬇️ Download my data", callback_data="tl:dl")],
+                                                                          [InlineKeyboardButton("🗑 Delete my data", callback_data="lo:ask")]]))
+        elif key == "dl":
+            await send_my_data(context, chat_id)
+        elif key == "rate":
+            await maybe_ask_rating(context.bot, chat_id, force=True)
+    elif action == "cm":
+        if parts[1] == "list":
+            await q.answer()
+            text, kb = course_menu(chat_id)
+            await q.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        elif len(parts) == 2:
+            await q.answer()
+            cid = int(parts[1])
+            rows = [[InlineKeyboardButton(f"{n}: {d}", callback_data=f"cm:{cid}:{i}")] for i, (n, v, d) in enumerate(PRESETS)]
+            rows.append([InlineKeyboardButton("↩️ Use my default", callback_data=f"cm:{cid}:x")])
+            await q.message.reply_text("⏱ Choose reminder times for this course:", reply_markup=InlineKeyboardMarkup(rows))
+        else:
+            cid = int(parts[1])
+            db.set_course_offsets(chat_id, cid, None if parts[2] == "x" else PRESETS[int(parts[2])][1])
+            await q.answer("Saved ✅")
+            text, kb = course_menu(chat_id)
+            await q.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+    elif action == "rate":
+        stars = int(parts[1])
+        await q.answer()
+        if stars == 0:
+            await q.edit_message_text("No problem, maybe later 🙂")
+            return
+        u = q.from_user
+        db.rating_set(chat_id, stars, "", int(time.time()), u.full_name or "", u.username or "")
+        db.set_field(chat_id, "rated", 1)
+        await notify_admins(context.bot, f"⭐ New rating: {stars}/5 from {u.full_name} (@{u.username or '-'}, ID {u.id})")
+        if stars >= 4:
+            await q.edit_message_text("🥳 Thank you! Tell your friends, the invite button is in 🧰 Tools.")
+        else:
+            context.user_data["await_rate_comment"] = True
+            context.user_data["stars"] = stars
+            await q.edit_message_text("🙏 Thanks for being honest. What should we improve? Type it now and I'll pass it to the admin.")
     elif action == "lo":
         if parts[1] == "ask":
             kb = InlineKeyboardMarkup([[
@@ -1198,9 +1694,37 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.answer("Admin only", show_alert=True)
             return
         await q.answer()
-        if parts[1] == "bc":
-            context.user_data["await_bc"] = True
-            await q.message.reply_text("📢 Type the message to send to all students now (or /cancel).")
+        if parts[1] in ("bc", "sched"):
+            context.user_data["adm"] = {"mode": parts[1], "step": "aud"}
+            await q.message.reply_text("Who should get it?", reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton(v, callback_data=f"adm:aud:{k}")] for k, v in AUDIENCES.items()]))
+        elif parts[1] == "aud":
+            flow = context.user_data.get("adm")
+            if flow:
+                flow.update(aud=parts[2], step="text")
+                await q.message.reply_text(f"✍️ Type your message now ({AUDIENCES[parts[2]]}). /cancel to stop.")
+        elif parts[1] == "exam":
+            await q.message.reply_text("📝 Add an exam countdown:\n/exam 2026-11-20 Mid-term exams\n\nSee them: /exams   Remove all: /clearexams")
+        elif parts[1] == "health":
+            rows = db.failing_users(int(time.time()))
+            await q.message.reply_text(
+                "🩺 <b>Sync health</b>\n" + ("\n".join(f"• <code>{r['chat_id']}</code> failed {r['sync_fail']}x" for r in rows) if rows else "All students sync fine ✅"),
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📨 Ask them to reconnect", callback_data="adm:reconnect")]]) if rows else None)
+        elif parts[1] == "reconnect":
+            n = await ask_failing_to_reconnect(context.bot)
+            await q.message.reply_text(f"📨 Asked {n} student(s) to reconnect.")
+        elif parts[1] == "ratings":
+            n, avg = db.rating_summary()
+            rows = db.ratings_list(15)
+            lines = [f"⭐ <b>Ratings</b>: {n} so far, average <b>{avg:.1f}/5</b>", ""]
+            for r in rows:
+                who = esc(r["name"] or "Unknown") + (f" (@{esc(r['username'])})" if r["username"] else "") + f" <code>{r['chat_id']}</code>"
+                lines.append(f"{'⭐' * int(r['stars'])} {who}" + (f"\n   💬 {esc(r['comment'])}" if r["comment"] else ""))
+            await q.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+        elif parts[1] == "pending":
+            rows = db.ann_pending()
+            await q.message.reply_text("🗓 Scheduled:\n" + ("\n".join(f"• {datetime.fromtimestamp(r['run_at'], ZoneInfo('Asia/Kolkata')):%d %b %H:%M} → {AUDIENCES.get(r['audience'], r['audience'])}: {r['text'][:40]}" for r in rows) or "nothing"))
         elif parts[1] == "stats":
             st = db.admin_stats(int(time.time()))
             pool = db.pool_counts(int(time.time()) - 3 * 86400)
@@ -1311,6 +1835,7 @@ def _public_commands():
         BotCommand("week", "Due this week"),
         BotCommand("upcoming", "Upcoming deadlines"),
         BotCommand("overdue", "Overdue tasks"),
+        BotCommand("tools", "More tools"),
         BotCommand("stats", "My points and streak"),
         BotCommand("leaderboard", "Friends leaderboard"),
         BotCommand("settings", "Settings (ON/OFF switches)"),
@@ -1358,6 +1883,9 @@ async def post_shutdown(app: Application):
         await runner.cleanup()
 
 
+MENU_ACTIONS.update({"🧰 Tools": cmd_tools, "🧠 Plan my week": cmd_plan, "☑️ Tick done": cmd_tick})
+
+
 def main():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).post_shutdown(post_shutdown).build()
     handlers = {
@@ -1367,7 +1895,7 @@ def main():
         "upcoming": cmd_upcoming, "overdue": cmd_overdue, "reminders": cmd_reminders,
         "digest": cmd_digest, "quiet": cmd_quiet, "timezone": cmd_timezone,
         "mute": cmd_mute, "unmute": cmd_unmute, "settings": cmd_settings, "style": cmd_style,
-        "admin": cmd_admin, "myid": cmd_myid, "msg": cmd_msg, "cancel": cmd_cancel, "stats": cmd_stats, "fun": cmd_fun, "leaderboard": cmd_leaderboard, "broadcast": cmd_broadcast, "botstats": cmd_botstats, "addmeme": cmd_addmeme_help,
+        "admin": cmd_admin, "tools": cmd_tools, "plan": cmd_plan, "tick": cmd_tick, "mydata": cmd_mydata, "exam": cmd_exam, "exams": cmd_exams, "clearexams": cmd_clearexams, "setgroup": cmd_setgroup, "myid": cmd_myid, "msg": cmd_msg, "cancel": cmd_cancel, "stats": cmd_stats, "fun": cmd_fun, "leaderboard": cmd_leaderboard, "broadcast": cmd_broadcast, "botstats": cmd_botstats, "addmeme": cmd_addmeme_help,
     }
     for name, fn in handlers.items():
         app.add_handler(CommandHandler(name, fn))
@@ -1380,6 +1908,8 @@ def main():
     app.job_queue.run_repeating(digest_job, interval=60, first=50)
     app.job_queue.run_repeating(pool_job, interval=60, first=20)
     app.job_queue.run_repeating(weekly_job, interval=60, first=55)
+    for _fn, _first in ((exam_job, 58), (quote_job, 59), (group_job, 61), (announce_job, 62)):
+        app.job_queue.run_repeating(_fn, interval=60, first=_first)
     app.job_queue.run_daily(backup_job, time=dtime(21, 30))  # 03:00 IST
     app.add_error_handler(on_error)
     if os.getenv("RENDER") and WEBAPP_URL:
