@@ -1092,6 +1092,8 @@ async def on_error(update, context):
         # Two copies ran at once (normal for a minute while Render swaps versions). Telegram settles it by itself.
         log.warning("Telegram Conflict: another instance was polling; ignoring (no alert)")
         return
+    if isinstance(context.error, BadRequest) and "not modified" in str(context.error).lower():
+        return  # harmless: the message already showed exactly that
     log.error("Unhandled error", exc_info=context.error)
     if time.time() - _last_alert > 600:
         _last_alert = time.time()
@@ -1550,7 +1552,7 @@ def NS_update(q):
 
 
 # ---------- inline buttons ----------
-async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def _on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     chat_id = q.message.chat_id
     parts = q.data.split(":")
@@ -1817,6 +1819,19 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.mute_course(chat_id, cid, name)
         await q.answer("Course muted. /unmute to undo.", show_alert=True)
         await q.edit_message_reply_markup(None)
+
+
+async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Run the button handler; tapping a button that would change nothing ("message is not modified") is not an error."""
+    try:
+        await _on_button(update, context)
+    except BadRequest as ex:
+        if "not modified" not in str(ex).lower():
+            raise
+        try:
+            await update.callback_query.answer()  # stop the button's loading spinner
+        except Exception:
+            pass
 
 
 async def ping_job(context: ContextTypes.DEFAULT_TYPE):
