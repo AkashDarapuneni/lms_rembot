@@ -25,7 +25,7 @@ from telegram import (
     WebAppInfo,
 )
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, Conflict
+from telegram.error import BadRequest, Conflict, NetworkError, TimedOut
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -1092,6 +1092,10 @@ async def on_error(update, context):
         # Two copies ran at once (normal for a minute while Render swaps versions). Telegram settles it by itself.
         log.warning("Telegram Conflict: another instance was polling; ignoring (no alert)")
         return
+    if isinstance(context.error, (TimedOut, NetworkError)):
+        # Telegram or the network was slow for a moment (TimedOut is a kind of NetworkError). It retries by itself.
+        log.warning("Telegram network hiccup (%s), ignoring", type(context.error).__name__)
+        return
     if isinstance(context.error, BadRequest) and "not modified" in str(context.error).lower():
         return  # harmless: the message already showed exactly that
     log.error("Unhandled error", exc_info=context.error)
@@ -1902,7 +1906,12 @@ MENU_ACTIONS.update({"🧰 Tools": cmd_tools, "🧠 Plan my week": cmd_plan, "�
 
 
 def main():
-    app = Application.builder().token(BOT_TOKEN).post_init(post_init).post_shutdown(post_shutdown).build()
+    app = (
+        Application.builder().token(BOT_TOKEN).post_init(post_init).post_shutdown(post_shutdown)
+        .connect_timeout(20).read_timeout(25).write_timeout(25).pool_timeout(20)  # Render's free CPU is slow, so wait longer
+        .get_updates_connect_timeout(20).get_updates_read_timeout(30).get_updates_pool_timeout(20)
+        .build()
+    )
     handlers = {
         "start": cmd_start, "help": cmd_help, "menu": cmd_menu, "test": cmd_test,
         "login": cmd_login, "token": cmd_token, "calendar": cmd_calendar,
